@@ -408,6 +408,9 @@ the generated frameworks in its application bundle. See
 [`docs/swift-api-command-matrix.md`](docs/swift-api-command-matrix.md) for
 the command coverage and daemon/bypass status.
 
+An executable sample client is available at
+[`Examples/SimUseMacOSClient`](Examples/SimUseMacOSClient).
+
 
 ## Viewer
 
