@@ -14,6 +14,7 @@ import iOSSimBackend
 @MainActor
 public final class SimUseClient {
     private var hidSessions: [String: HIDInteractor.Session] = [:]
+    private var livenessTrackers: [String: ProcessLivenessTracker] = [:]
 
     public init() {}
 
@@ -69,6 +70,7 @@ public final class SimUseClient {
     ) async throws {
         try validate(deviceID)
         guard !events.isEmpty else { return }
+        try validate(events)
 
         do {
             var session = try await session(for: deviceID)
@@ -111,9 +113,51 @@ public final class SimUseClient {
         return session
     }
 
+    func livenessTracker(for deviceID: SimulatorID) -> ProcessLivenessTracker {
+        if let tracker = livenessTrackers[deviceID.rawValue] {
+            return tracker
+        }
+        let tracker = ProcessLivenessTracker()
+        livenessTrackers[deviceID.rawValue] = tracker
+        return tracker
+    }
+
     private func validate(_ deviceID: SimulatorID) throws {
         guard !deviceID.rawValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw SimUseError.invalidRequest("Device ID must not be empty.")
+        }
+    }
+
+    private func validate(_ events: [HIDEvent]) throws {
+        for event in events {
+            switch event {
+            case let .touchDown(x, y), let .touchMove(x, y), let .touchUp(x, y), let .tap(x, y):
+                try validateCoordinate(x, y)
+            case let .swipe(startX, startY, endX, endY, delta, duration):
+                try validateCoordinate(startX, startY)
+                try validateCoordinate(endX, endY)
+                guard delta.isFinite, delta > 0, duration.isFinite, duration > 0 else {
+                    throw SimUseError.invalidRequest("Swipe delta and duration must be finite positive values.")
+                }
+            case let .keyDown(keyCode), let .keyUp(keyCode):
+                guard keyCode <= 255 else {
+                    throw SimUseError.invalidRequest("HID keycode must be between 0 and 255.")
+                }
+            case let .buttonDown(button), let .buttonUp(button):
+                guard (1...5).contains(button) else {
+                    throw SimUseError.invalidRequest("HID button must be between 1 and 5.")
+                }
+            case let .delay(seconds):
+                guard seconds.isFinite, seconds >= 0 else {
+                    throw SimUseError.invalidRequest("HID delay must be a finite non-negative value.")
+                }
+            }
+        }
+    }
+
+    private func validateCoordinate(_ x: Double, _ y: Double) throws {
+        guard x.isFinite, y.isFinite, x >= 0, y >= 0 else {
+            throw SimUseError.invalidRequest("HID coordinates must be finite non-negative values.")
         }
     }
 }
@@ -196,9 +240,9 @@ public enum HIDEvent: Sendable {
         case let .keyUp(keyCode):
             return FBSimulatorHIDEvent.keyUp(keyCode)
         case let .buttonDown(button):
-            return FBSimulatorHIDEvent.buttonDown(FBSimulatorHIDButton(rawValue: Int(button)))
+            return FBSimulatorHIDEvent.buttonDown(FBSimulatorHIDButton(rawValue: Int32(button))!)
         case let .buttonUp(button):
-            return FBSimulatorHIDEvent.buttonUp(FBSimulatorHIDButton(rawValue: Int(button)))
+            return FBSimulatorHIDEvent.buttonUp(FBSimulatorHIDButton(rawValue: Int32(button))!)
         case let .delay(seconds):
             return FBSimulatorHIDEvent.delay(seconds)
         }

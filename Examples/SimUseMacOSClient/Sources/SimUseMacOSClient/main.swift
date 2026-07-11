@@ -16,6 +16,10 @@ struct SimUseMacOSClient {
         let result = try await client.execute(DescribeUIRequest(), on: device)
         print(result.outline)
 
+        if CommandLine.arguments.contains("--describe-only") {
+            return
+        }
+
         let session = try await client.openSession(for: device)
         try await session.send([
             .touchDown(x: 100, y: 300),

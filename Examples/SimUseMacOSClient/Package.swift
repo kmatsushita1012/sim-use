@@ -11,7 +11,7 @@ let package = Package(
         .executableTarget(
             name: "SimUseMacOSClient",
             dependencies: [
-                .product(name: "SimUseKit", package: "SimUse")
+                .product(name: "SimUseKit", package: "sim-use")
             ]
         )
     ]

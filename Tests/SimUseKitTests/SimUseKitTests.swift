@@ -30,4 +30,27 @@ struct SimUseKitTests {
         #expect(request.seedCellWidth == 160)
         #expect(request.seedCellHeight == 80)
     }
+
+    @Test("cross-platform requests preserve typed command intent")
+    func crossPlatformRequests() {
+        let request = LongPressRequest(
+            target: TapRequest(accessibilityIdentifier: "moreButton"),
+            duration: 0.8
+        )
+        #expect(request.target.accessibilityIdentifier == "moreButton")
+        #expect(request.duration == 0.8)
+
+        let state = AppStateResult(
+            platform: "ios",
+            apps: [AppProcess(bundleID: "com.example.app", pid: 42)],
+            query: AppStateQuery(bundleID: "com.example.app", state: .running),
+            didReset: false
+        )
+        #expect(state.query?.state == .running)
+
+        let video = VideoStreamConfiguration()
+        #expect(video.framesPerSecond == 10)
+        #expect(video.quality == 80)
+        #expect(video.scale == 1.0)
+    }
 }

@@ -6,6 +6,7 @@
 | --- | --- | --- | --- | --- | --- |
 | iOS | `describe-ui` / `ui` | `IOSSimDescribeUICommand` | yes | typed request | `DescribeUIResult` |
 | iOS | `tap` | `IOSSimTapCommand` | yes | typed request | tap coordinates / advisory |
+| iOS | `long-press` | top-level `LongPress` → `IOSSimTapCommand` | yes | `LongPressRequest` | tap coordinates |
 | iOS | `swipe` | `IOSSimSwipeCommand` | yes | typed request | `SwipeCoordinates` |
 | iOS | `touch` | `IOSSimTouchCommand` | yes | typed request + session events | empty result |
 | iOS | `type` | `IOSSimTypeCommand` | yes* | typed request | typed completion result |
@@ -20,9 +21,11 @@
 | iOS | `batch` | `IOSSimBatchCommand` | yes* | typed plan request | batch result |
 | iOS | `screenshot` | `IOSSimScreenshotCommand` | bypass | direct API | file/data result |
 | iOS | `record-video` | `IOSSimRecordVideoCommand` | bypass | direct API | file result |
-| iOS | `stream-video` | `IOSSimStreamVideoCommand` | bypass | direct API / AsyncSequence | stream summary |
+| iOS | `stream-video` | `IOSSimStreamVideoCommand` | bypass | `SimUseClient.streamVideo` / typed command | `AsyncThrowingStream<VideoFrame>` or stream summary |
+| Cross-platform | `app-state` | top-level `AppState` | yes | `AppStateRequest` | `AppStateResult` |
 | Android | `describe-ui` / `ui` | `AndroidDescribeUICommand` | yes | typed request | `DescribeUIResult` |
 | Android | `tap` | `AndroidTapCommand` | yes | typed request | tap coordinates |
+| Android | `long-press` | top-level `LongPress` → `AndroidTapCommand` | yes | `LongPressRequest` | tap coordinates |
 | Android | `swipe` | `AndroidSwipeCommand` | yes | typed request | swipe coordinates |
 | Android | `touch` | `AndroidTouchCommand` | yes | typed request | empty result |
 | Android | `type` | `AndroidTypeCommand` | yes | typed request | typed completion result |
@@ -44,7 +47,9 @@
 properties を設定してから渡せます。これは CLI の再パースではなく、対象
 command の `resolveDeferredArguments()`、`validate()`、`execute()` を直接呼びます。
 
-`devices`、`list-simulators`、`app-state`、daemon 管理 (`daemon status` / `stop` など) は、対象 Simulator に紐づく daemon command ではありません。Swift API では別の device/session 管理 API として扱います。
+`devices`、`list-simulators`、daemon 管理 (`daemon status` / `stop` など) は、対象 Simulator に紐づく daemon command ではありません。Swift API では別の device/session 管理 API として扱います。
+
+`app-state` は対象 device に紐づく liveness tracker を `SimUseClient` 内に保持するため、`AppStateRequest(reset:)` で daemon と同様に同じ client 内の baseline を更新できます。
 
 ## エラー分類
 

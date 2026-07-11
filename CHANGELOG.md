@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requests, a generic interface for all existing `SimUseExecutableCommand`
   implementations, Simulator-scoped HID sessions, and continuous HID event
   sequences without launching the CLI or using the daemon socket.
+- Added a standalone macOS `SimUseKit` sample client and a repeatable
+  `scripts/benchmark-swift-api.sh` comparison for daemon CLI, in-process CLI,
+  and Swift wrapper latency.
+- Added direct adapters for cross-platform `long-press` and `app-state`, plus
+  an application-facing asynchronous JPEG frame stream for iOS video.
 
 ## [0.10.0] - 2026-07-09
 

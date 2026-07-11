@@ -143,6 +143,7 @@ let package = Package(
             exclude: [
                 "SimUseCoreTests",
                 "AndroidBackendTests",
+                "SimUseKitTests",
             ],
             resources: [
                 .copy("README.md"),

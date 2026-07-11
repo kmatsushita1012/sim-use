@@ -380,6 +380,26 @@ func exerciseSimulator(_ id: String) async throws {
         on: device
     )
 
+    _ = try await client.execute(
+        LongPressRequest(
+            target: TapRequest(accessibilityIdentifier: "moreButton"),
+            duration: 0.8
+        ),
+        on: device
+    )
+
+    let appState = try await client.execute(
+        AppStateRequest(bundleID: "com.example.app"),
+        on: device
+    )
+    print(appState.query?.state.rawValue ?? "unknown")
+
+    let frames = try await client.streamVideo(on: device)
+    for try await frame in frames {
+        renderJPEG(frame.jpegData)
+        break
+    }
+
     let session = try await client.openSession(for: device)
     try await session.send([
         .touchDown(x: 100, y: 300),
@@ -410,6 +430,9 @@ the command coverage and daemon/bypass status.
 
 An executable sample client is available at
 [`Examples/SimUseMacOSClient`](Examples/SimUseMacOSClient).
+For a repeatable comparison between daemon CLI, in-process CLI, and the
+Swift wrapper, use [`scripts/benchmark-swift-api.sh`](scripts/benchmark-swift-api.sh)
+with a booted Simulator.
 
 
 ## Viewer
