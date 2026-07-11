@@ -70,7 +70,23 @@ public struct HIDInteractor {
     }
 
     public static func performHIDEvent(_ event: FBSimulatorHIDEvent, in session: Session, logger: SimUseLogger) async throws {
-        _ = try await performHIDEventReturningSession(event, in: session, logger: logger)
+        do {
+            try await performHIDEventOnce(event, in: session, logger: logger)
+        } catch {
+            try await HIDPerformRecovery.recover(from: error, invalidate: {
+                logger.error().log("HID event failed (\(error.localizedDescription)); dropping cached HID connection for \(session.simulatorUDID)")
+                clearHIDConnection(for: session.simulatorUDID)
+            }, rebuildAndRetry: {
+                logger.info().log("Dead HID transport for \(session.simulatorUDID); rebuilding session and retrying once...")
+                let freshSession = try await makeSession(for: session.simulatorUDID, logger: logger)
+                do {
+                    try await performHIDEventOnce(event, in: freshSession, logger: logger)
+                } catch {
+                    clearHIDConnection(for: session.simulatorUDID)
+                    throw error
+                }
+            })
+        }
     }
 
     /// Performs one event and returns the session that is valid after the

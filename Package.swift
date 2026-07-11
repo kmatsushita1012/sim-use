@@ -87,6 +87,8 @@ let package = Package(
                 "iOSSimBackend",
                 "AndroidBackend",
                 "FBSimulatorControl",
+                "FBControlCore",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/SimUseKit"
         ),

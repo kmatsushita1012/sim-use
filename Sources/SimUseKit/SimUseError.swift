@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
+import ArgumentParser
 import SimUseCore
 
 /// Errors exposed by the application-facing API.
@@ -27,8 +28,14 @@ public enum SimUseError: Error, LocalizedError, Sendable {
     public static func map(_ error: Error, deviceID: String) -> SimUseError {
         if let error = error as? SimUseError { return error }
         let message = error.localizedDescription
+        if error is ValidationError {
+            return .invalidRequest(message)
+        }
         if DaemonErrorKind.isStaleSimulatorMessage(message) {
             return .staleSession(deviceID: deviceID, underlying: message)
+        }
+        if DaemonErrorKind.classify(error) == .transientBooting {
+            return .transient(message)
         }
         if message.localizedCaseInsensitiveContains("not booted") {
             return .deviceNotBooted(message)
