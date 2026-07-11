@@ -21,6 +21,7 @@ public final class SimUseClient {
     /// session is a lightweight handle; the HID object remains owned by the
     /// client and is invalidated automatically when an event fails.
     public func openSession(for deviceID: SimulatorID) async throws -> SimulatorSession {
+        try validate(deviceID)
         _ = try await session(for: deviceID)
         return SimulatorSession(deviceID: deviceID, client: self)
     }
@@ -30,6 +31,7 @@ public final class SimUseClient {
         _ request: Request,
         on deviceID: SimulatorID
     ) async throws -> Request.Output {
+        try validate(deviceID)
         do {
             return try await request.execute(on: deviceID, using: self)
         } catch {
@@ -47,6 +49,7 @@ public final class SimUseClient {
         _ command: Command,
         on deviceID: SimulatorID
     ) async throws -> Command.ExecutionResult {
+        try validate(deviceID)
         var command = command
         do {
             try command.resolveDeferredArguments()
@@ -64,6 +67,7 @@ public final class SimUseClient {
         _ events: [HIDEvent],
         on deviceID: SimulatorID
     ) async throws {
+        try validate(deviceID)
         guard !events.isEmpty else { return }
 
         do {
@@ -105,6 +109,12 @@ public final class SimUseClient {
         )
         hidSessions[deviceID.rawValue] = session
         return session
+    }
+
+    private func validate(_ deviceID: SimulatorID) throws {
+        guard !deviceID.rawValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw SimUseError.invalidRequest("Device ID must not be empty.")
+        }
     }
 }
 
