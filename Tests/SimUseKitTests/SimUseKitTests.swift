@@ -16,7 +16,7 @@ struct SimUseKitTests {
     func touchSequenceRequest() {
         let request = TouchSequenceRequest(events: [
             .touchDown(x: 1, y: 2),
-            .touchDown(x: 3, y: 4),
+            .touchMove(x: 3, y: 4),
             .touchUp(x: 3, y: 4),
         ])
         #expect(request.events.count == 3)

@@ -383,8 +383,8 @@ func exerciseSimulator(_ id: String) async throws {
     let session = try await client.openSession(for: device)
     try await session.send([
         .touchDown(x: 100, y: 300),
-        .touchDown(x: 140, y: 300),
-        .touchDown(x: 180, y: 300),
+        .touchMove(x: 140, y: 300),
+        .touchMove(x: 180, y: 300),
         .touchUp(x: 180, y: 300),
     ])
 }

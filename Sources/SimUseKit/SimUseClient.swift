@@ -150,6 +150,9 @@ public protocol SimUseRequest {
 /// the adapter target.
 public enum HIDEvent: Sendable {
     case touchDown(x: Double, y: Double)
+    /// idb's fixed revision represents a move in a continuous touch path
+    /// with another `touchDownAt` event on the same HID connection.
+    case touchMove(x: Double, y: Double)
     case touchUp(x: Double, y: Double)
     case tap(x: Double, y: Double)
     case swipe(startX: Double, startY: Double, endX: Double, endY: Double, delta: Double, duration: Double)
@@ -162,6 +165,8 @@ public enum HIDEvent: Sendable {
     fileprivate func makeBackendEvent() -> FBSimulatorHIDEvent {
         switch self {
         case let .touchDown(x, y):
+            return FBSimulatorHIDEvent.touchDownAt(x: x, y: y)
+        case let .touchMove(x, y):
             return FBSimulatorHIDEvent.touchDownAt(x: x, y: y)
         case let .touchUp(x, y):
             return FBSimulatorHIDEvent.touchUpAt(x: x, y: y)
