@@ -5,7 +5,7 @@ set -euo pipefail
 UDID="${UDID:-}"
 ITERATIONS="${ITERATIONS:-10}"
 SIM_USE_PATH="${SIM_USE_PATH:-.build/debug/sim-use}"
-WRAPPER_PATH="${WRAPPER_PATH:-Examples/SimUseMacOSClient/.build/debug/SimUseMacOSClient}"
+WRAPPER_PATH="${WRAPPER_PATH:-Examples/SimUseMacOSClient/.build/arm64-apple-macosx/debug/SimUseMacOSClient}"
 
 usage() {
   cat <<EOF
