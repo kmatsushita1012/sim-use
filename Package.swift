@@ -24,6 +24,10 @@ let package = Package(
             name: "iOSSimBackend",
             targets: ["iOSSimBackend"]
         ),
+        .library(
+            name: "SimUseKit",
+            targets: ["SimUseKit"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
@@ -75,6 +79,16 @@ let package = Package(
             resources: [
                 .copy("Resources"),
             ]
+        ),
+        .target(
+            name: "SimUseKit",
+            dependencies: [
+                "SimUseCore",
+                "iOSSimBackend",
+                "AndroidBackend",
+                "FBSimulatorControl",
+            ],
+            path: "Sources/SimUseKit"
         ),
         .executableTarget(
             name: "SimUse",
@@ -146,6 +160,11 @@ let package = Package(
             // it as a resource would emit a SwiftPM warning. Add a
             // `.copy("Fixtures")` entry when real fixture files
             // land.
+        ),
+        .testTarget(
+            name: "SimUseKitTests",
+            dependencies: ["SimUseKit", "SimUseCore"],
+            path: "Tests/SimUseKitTests"
         ),
         .plugin(
             name: "VersionPlugin",

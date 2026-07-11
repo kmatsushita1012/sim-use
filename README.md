@@ -357,6 +357,57 @@ sim-use drives iOS Simulators through the lower-level XCFrameworks of Facebook's
 - **Full HID surface.** Tap, swipe, touch, gesture presets, hardware buttons, key combos, and IME-safe Unicode paste all exposed as first-class commands.
 - **Scriptable from day one.** Every command supports `--json` for machine consumption; `batch` collapses multi-step flows into a single invocation.
 
+### macOS application API
+
+The package also exposes the `SimUseKit` library product for macOS
+applications. It calls the existing Swift backends directly; it does not
+launch `sim-use`, parse CLI arguments, or use the daemon socket.
+
+```swift
+import SimUseKit
+import SimUseCore
+
+@MainActor
+func exerciseSimulator(_ id: String) async throws {
+    let client = SimUseClient()
+    let device = SimulatorID(id)
+
+    let screen = try await client.execute(DescribeUIRequest(), on: device)
+    print(screen.outline)
+
+    _ = try await client.execute(
+        TapRequest(accessibilityIdentifier: "loginButton"),
+        on: device
+    )
+
+    let session = try await client.openSession(for: device)
+    try await session.send([
+        .touchDown(x: 100, y: 300),
+        .touchDown(x: 140, y: 300),
+        .touchDown(x: 180, y: 300),
+        .touchUp(x: 180, y: 300),
+    ])
+}
+```
+
+専用 request がまだないコマンドも、型付き generic interface で直接実行できます。
+
+```swift
+var key = IOSKeyCommand()
+key.keycode = 40
+key.device.device = device.rawValue
+let result = try await client.execute(key, on: device)
+```
+
+この経路も CLI プロセス、JSON socket、ArgumentParser の再パースを使用しません。
+
+`SimUseKit` is intended for macOS 14 or later and still requires the same
+Xcode/idb-derived XCFrameworks as the CLI. The iOS Simulator backend loads
+private simulator frameworks at runtime, so the host app must embed and sign
+the generated frameworks in its application bundle. See
+[`docs/swift-api-command-matrix.md`](docs/swift-api-command-matrix.md) for
+the command coverage and daemon/bypass status.
+
 
 ## Viewer
 

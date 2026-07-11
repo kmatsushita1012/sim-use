@@ -70,8 +70,22 @@ public struct HIDInteractor {
     }
 
     public static func performHIDEvent(_ event: FBSimulatorHIDEvent, in session: Session, logger: SimUseLogger) async throws {
+        _ = try await performHIDEventReturningSession(event, in: session, logger: logger)
+    }
+
+    /// Performs one event and returns the session that is valid after the
+    /// operation. This is the application-API counterpart of
+    /// `performHIDEvent(in:)`: when the dead-transport recovery path rebuilds
+    /// a connection, callers that retain a session handle must receive that
+    /// fresh session before sending the next event in a continuous gesture.
+    public static func performHIDEventReturningSession(
+        _ event: FBSimulatorHIDEvent,
+        in session: Session,
+        logger: SimUseLogger
+    ) async throws -> Session {
         do {
             try await performHIDEventOnce(event, in: session, logger: logger)
+            return session
         } catch {
             // Fail-invalidate + cautious retry-once: see HIDPerformRecovery
             // for the decision rules and why only dead-transport errors
@@ -91,6 +105,10 @@ public struct HIDInteractor {
                     throw error
                 }
             })
+            // A successful recovery stores the rebuilt connection in the
+            // shared HID cache. Read it back so callers retain the fresh
+            // boot-scoped session for the next event.
+            return try await makeSession(for: session.simulatorUDID, logger: logger)
         }
     }
 
@@ -149,4 +167,4 @@ public struct HIDInteractor {
     public static func clearHIDConnection(for simulatorUDID: String) {
         hidConnections.removeValue(forKey: simulatorUDID)
     }
-} 
+}

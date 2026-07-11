@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added the `SimUseKit` macOS library product. It exposes typed direct Swift
+  requests, a generic interface for all existing `SimUseExecutableCommand`
+  implementations, Simulator-scoped HID sessions, and continuous HID event
+  sequences without launching the CLI or using the daemon socket.
+
 ## [0.10.0] - 2026-07-09
 
 ### Added
