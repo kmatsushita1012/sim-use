@@ -4,3 +4,5 @@
 /// models. Application targets only need to import SimUseKit; they do not
 /// need to know that these shared types are implemented in SimUseCore.
 @_exported import SimUseCore
+@_exported import iOSSimBackend
+@_exported import AndroidBackend

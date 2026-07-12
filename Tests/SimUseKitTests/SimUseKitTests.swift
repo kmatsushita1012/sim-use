@@ -56,4 +56,16 @@ struct SimUseKitTests {
         let screenshot = ScreenshotResult(data: Data([0x89, 0x50, 0x4E, 0x47]))
         #expect(screenshot.data.count == 4)
     }
+
+    @Test("legacy gesture aliases are usable through SimUseKit alone")
+    func legacyGestureAlias() {
+        var command = IOSGestureCommand()
+        command.preset = .scrollUp
+        command.steps = 10
+        #expect(command.preset == .scrollUp)
+
+        var implementationName = IOSSimGestureCommand()
+        implementationName.preset = .scrollDown
+        #expect(implementationName.preset == .scrollDown)
+    }
 }
