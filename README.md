@@ -386,6 +386,11 @@ func exerciseSimulator(_ id: String) async throws {
         on: device
     )
 
+    _ = try await client.execute(
+        GestureRequest(preset: .scrollUp),
+        on: device
+    )
+
     let appState = try await client.execute(
         AppStateRequest(bundleID: "com.example.app"),
         on: device
