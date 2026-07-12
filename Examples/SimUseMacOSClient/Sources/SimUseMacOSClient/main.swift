@@ -57,16 +57,20 @@ struct SimUseMacOSClient {
             print("event[\(timing.index)] \(eventName(timing.event)) interval=\(format(timing.interval))s elapsed=\(format(timing.elapsed))s")
         }
 
-        let swipeStart = Date.timeIntervalSinceReferenceDate
-        _ = try await client.execute(
-            SwipeRequest(
-                coordinates: SwipeCoordinates(startX: 100, startY: 500, endX: 100, endY: 400),
-                duration: 0.2,
-                delta: 0.05
+        // Keep this comparison on the same direct HID path. Calling the
+        // parser-backed SwipeRequest here would reintroduce CLI command
+        // initialization into the application-facing benchmark.
+        let swipeTimings = try await session.sendTimed([
+            .swipe(
+                startX: 100,
+                startY: 500,
+                endX: 100,
+                endY: 400,
+                delta: 0.05,
+                duration: 0.2
             ),
-            on: device
-        )
-        let swipeTotal = Date.timeIntervalSinceReferenceDate - swipeStart
+        ])
+        let swipeTotal = swipeTimings.last?.elapsed ?? 0
         print("swipe total=\(format(swipeTotal))s")
     }
 
