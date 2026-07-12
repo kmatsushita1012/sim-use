@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed `MainActor` isolation from the `SimUseKit` application API. Simulator
   state is now owned by a per-UDID worker actor with a serial executor, while
   UI state remains the macOS application's responsibility.
+- Made `SimUseExecutableCommand.ExecutionResult` explicitly `Sendable` and
+  applied the same value-type constraint to all built-in iOS and Android
+  command results.
 
 ## [0.10.0] - 2026-07-09
 

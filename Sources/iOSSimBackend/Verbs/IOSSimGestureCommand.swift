@@ -10,7 +10,7 @@ import SimUseCore
 /// `sim-use ios gesture`. The top-level command resolves the target
 /// platform via `PlatformRouter` and forwards iOS UDIDs through here.
 public struct IOSSimGestureCommand: SimUseExecutableCommand {
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public init() {}
     }
 

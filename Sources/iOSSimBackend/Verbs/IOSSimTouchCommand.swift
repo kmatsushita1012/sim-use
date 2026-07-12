@@ -15,7 +15,7 @@ import SimUseCore
 /// open across other commands). The split form has no Android peer —
 /// the cross-platform forwarder rejects it on Android.
 public struct IOSSimTouchCommand: SimUseExecutableCommand {
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public init() {}
     }
 

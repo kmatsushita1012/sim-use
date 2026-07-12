@@ -10,7 +10,7 @@ import SimUseCore
 /// `sim-use ios key-sequence` only; path B keeps the top-level
 /// surface honest.
 public struct IOSSimKeySequenceCommand: SimUseExecutableCommand {
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public init() {}
     }
 

@@ -10,7 +10,7 @@ import SimUseCore
 /// `sim-use ios type`. The top-level command resolves the target
 /// platform via `PlatformRouter` and forwards iOS UDIDs through here.
 public struct IOSSimTypeCommand: SimUseExecutableCommand {
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public init() {}
     }
 

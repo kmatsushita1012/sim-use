@@ -12,7 +12,7 @@ import SimUseCore
 /// without the `INJECT_EVENTS` permission). Reach via
 /// `sim-use ios key <code>` instead.
 public struct IOSSimKeyCommand: SimUseExecutableCommand {
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public init() {}
     }
 

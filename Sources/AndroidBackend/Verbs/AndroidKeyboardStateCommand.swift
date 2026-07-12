@@ -25,7 +25,7 @@ public struct AndroidKeyboardStateCommand: SimUseExecutableCommand {
     /// Mirrors `IOSSimKeyboardStateCommand.ExecutionResult` so an
     /// agent script switching `--device` between an iOS and Android
     /// target sees the same schema regardless of platform.
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public let platform: String
         public let visible: Bool
         public let imePackage: String?

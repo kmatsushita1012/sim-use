@@ -77,7 +77,7 @@ public enum ButtonType: String, CaseIterable, ExpressibleByArgument {
 /// `sim-use ios button`. The top-level command resolves the target
 /// platform via `PlatformRouter` and forwards iOS UDIDs through here.
 public struct IOSSimButtonCommand: SimUseExecutableCommand {
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public init() {}
     }
 

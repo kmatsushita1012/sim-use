@@ -20,7 +20,9 @@ import Foundation
 /// so CLI `--json` output and daemon responses share one parser on the
 /// agent side.
 public protocol SimUseExecutableCommand: AsyncParsableCommand {
-    associatedtype ExecutionResult: Codable
+    /// Command results cross daemon/application concurrency boundaries and
+    /// must be safe to move between tasks and actors.
+    associatedtype ExecutionResult: Codable & Sendable
 
     /// Whether the caller requested compact JSON output. Satisfied by a
     /// `@Flag(name: .customLong("json")) var jsonOutput: Bool = false`

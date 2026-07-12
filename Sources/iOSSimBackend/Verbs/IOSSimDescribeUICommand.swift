@@ -74,7 +74,7 @@ public struct IOSSimDescribeUICommand: SimUseExecutableCommand {
     /// in dominance order so agents that prefer to reason explicitly
     /// about lists can skip the entries walk. See
     /// `DESCRIBE_UI_OUTLINE.md` §4.
-    public struct ExecutionResult: Codable, CommandAdvisoryProviding {
+    public struct ExecutionResult: Codable, Sendable, CommandAdvisoryProviding {
         public let platform: String
         /// Raw a11y tree passthrough. Optional because the daemon path
         /// skips encoding it when the client didn't request `--json` —

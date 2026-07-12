@@ -23,7 +23,7 @@ public struct IOSSimStreamVideoCommand: SimUseExecutableCommand {
     /// channel, not part of the Result. Streaming commands bypass the
     /// daemon transport for exactly this reason, but the typed Result
     /// still powers a future `--json` flag that emits the summary alone.
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public let framesStreamed: UInt64
         public let durationSeconds: Double
         public let format: OutputFormat

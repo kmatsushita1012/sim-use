@@ -14,7 +14,7 @@ import SimUseCore
 /// long-press + edit-menu Paste). `--via-menu` is iOS-only — on
 /// Android the bridge already bypasses the IME via ACTION_PASTE.
 public struct IOSSimPasteCommand: SimUseExecutableCommand {
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public init() {}
     }
 

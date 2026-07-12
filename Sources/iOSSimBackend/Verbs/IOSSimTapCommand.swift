@@ -104,7 +104,7 @@ public struct IOSSimTapCommand: SimUseExecutableCommand {
         return filter.isEmpty ? nil : filter
     }
 
-    public struct ExecutionResult: Codable, CommandAdvisoryProviding {
+    public struct ExecutionResult: Codable, Sendable, CommandAdvisoryProviding {
         public let x: Double
         public let y: Double
         /// Excluded from the encoded `data` payload via `CodingKeys`

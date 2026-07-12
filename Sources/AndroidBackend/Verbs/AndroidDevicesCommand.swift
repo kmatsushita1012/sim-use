@@ -31,14 +31,14 @@ public struct AndroidDevicesCommand: SimUseExecutableCommand {
     /// `CodingKeys`. It exists so the text-mode formatter can rebuild
     /// the historical `serial<TAB>state<TAB>model=…<TAB>product=…`
     /// table without re-querying adb.
-    public struct AdbRow: Codable {
+    public struct AdbRow: Codable, Sendable {
         public let serial: String
         public let state: String
         public let model: String?
         public let product: String?
     }
 
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public let devices: [Device]
         public let adbRows: [AdbRow]
 

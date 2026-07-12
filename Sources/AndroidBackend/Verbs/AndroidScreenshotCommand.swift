@@ -21,7 +21,7 @@ public struct AndroidScreenshotCommand: SimUseExecutableCommand {
 
     public init() {}
 
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public let path: String
     }
 

@@ -24,7 +24,7 @@ import SimUseCore
 /// `tap --fingers 2` / `long-press --fingers 2` forms are the
 /// ergonomic path.
 public struct IOSSimMultiTouchCommand: SimUseExecutableCommand {
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public init() {}
     }
 

@@ -11,7 +11,7 @@ import SimUseCore
 /// `sim-use key-combo` (path B: the cross-platform surface stays
 /// honest about what works on every UDID).
 public struct IOSSimKeyComboCommand: SimUseExecutableCommand {
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public init() {}
     }
 

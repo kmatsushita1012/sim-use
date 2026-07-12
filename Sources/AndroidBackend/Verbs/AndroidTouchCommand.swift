@@ -38,7 +38,7 @@ public struct AndroidTouchCommand: SimUseExecutableCommand {
 
     public init() {}
 
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public init() {}
     }
 

@@ -17,7 +17,7 @@ public struct IOSSimKeyboardStateCommand: SimUseExecutableCommand {
     /// signals that were actually observed and the schema reads as
     /// a tagged union (`{platform: "ios", visible, chromeKeyCount,
     /// ...}` vs `{platform: "android", visible, imePackage}`).
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public let platform: String
         public let visible: Bool
         public let chromeKeyCount: Int?

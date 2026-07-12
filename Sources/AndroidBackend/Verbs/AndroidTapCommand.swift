@@ -69,7 +69,7 @@ public struct AndroidTapCommand: SimUseExecutableCommand {
     /// resolver path (e.g. `alias @4 → "Send"`) for the text-mode
     /// stderr diagnostic; `CodingKeys` excludes it from the JSON
     /// envelope so iOS / Android `--json` outputs stay byte-identical.
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public let x: Double
         public let y: Double
         public let description: String

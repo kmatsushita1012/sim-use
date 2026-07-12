@@ -157,7 +157,7 @@ struct Daemon: AsyncParsableCommand {
             }
         }
 
-        struct ExecutionResult: Codable {
+        struct ExecutionResult: Codable, Sendable {
             let entries: [StopEntry]
         }
 
@@ -365,7 +365,7 @@ struct Daemon: AsyncParsableCommand {
             }
         }
 
-        struct ExecutionResult: Codable {
+        struct ExecutionResult: Codable, Sendable {
             let daemons: [StatusEntry]
         }
 

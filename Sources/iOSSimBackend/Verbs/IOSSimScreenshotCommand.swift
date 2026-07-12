@@ -11,7 +11,7 @@ import SimUseCore
 /// target platform via `PlatformRouter` and forwards iOS UDIDs
 /// through here.
 public struct IOSSimScreenshotCommand: SimUseExecutableCommand {
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public let path: String
         public init(path: String) {
             self.path = path

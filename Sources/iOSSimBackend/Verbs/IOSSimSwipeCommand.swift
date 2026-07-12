@@ -13,7 +13,7 @@ public struct IOSSimSwipeCommand: SimUseExecutableCommand {
     /// Carries the resolved coordinates so `format(_:)` renders from
     /// the execution result instead of re-resolving the raw flags —
     /// same shape as `IOSSimTapCommand.ExecutionResult`.
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public let coordinates: SwipeCoordinates
 
         public init(coordinates: SwipeCoordinates) {

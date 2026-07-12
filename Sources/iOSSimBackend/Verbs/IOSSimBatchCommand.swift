@@ -10,7 +10,7 @@ import SimUseCore
 /// session plumbing has no Android equivalent. Reach via
 /// `sim-use ios batch` only.
 public struct IOSSimBatchCommand: SimUseExecutableCommand {
-    public struct ExecutionResult: Codable, CommandAdvisoryProviding {
+    public struct ExecutionResult: Codable, Sendable, CommandAdvisoryProviding {
         public let stepsExecuted: Int
         /// Merged advisories recorded while resolving selector-based
         /// steps (see `BatchContext.recordAdvisory`). Hoisted to the

@@ -21,7 +21,7 @@ public struct AndroidInitCommand: SimUseExecutableCommand {
 
     public init() {}
 
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public let serial: String
         public let bridgeVersion: String
         public let protocolVersion: Int

@@ -17,7 +17,7 @@ public struct AndroidPingCommand: SimUseExecutableCommand {
 
     public init() {}
 
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public let bridgeVersion: String
         public let protocolVersion: Int
     }

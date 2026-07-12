@@ -52,7 +52,7 @@ struct Devices: SimUseExecutableCommand {
     @Flag(name: .customLong("json"), help: "Emit a JSON envelope `{ok, data: {devices: [...]}}` instead of the aligned text table.")
     var jsonOutput: Bool = false
 
-    struct ExecutionResult: Codable {
+    struct ExecutionResult: Codable, Sendable {
         let devices: [Device]
     }
 

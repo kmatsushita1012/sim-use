@@ -63,7 +63,7 @@ struct AppState: SimUseExecutableCommand {
         let state: String
     }
 
-    struct ExecutionResult: Codable {
+    struct ExecutionResult: Codable, Sendable {
         let platform: String
         let apps: [AppProcess]
         let query: AppStateQuery?

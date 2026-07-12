@@ -25,13 +25,13 @@ struct Init: SimUseExecutableCommand {
         """
     )
 
-    enum Client: String, ExpressibleByArgument, CaseIterable {
+    enum Client: String, ExpressibleByArgument, CaseIterable, Sendable {
         case auto
         case claude
         case agents
     }
 
-    enum ExecutionResult: Codable {
+    enum ExecutionResult: Codable, Sendable {
         case printedSkill(markdown: String)
         case installed(entries: [String])
         case uninstalled(entries: [String])

@@ -21,7 +21,7 @@ struct ListSimulators: SimUseExecutableCommand {
     @Flag(name: .customLong("json"), help: "Emit the simulator list as compact JSON (one array of strings).")
     var jsonOutput: Bool = false
 
-    struct ExecutionResult: Codable {
+    struct ExecutionResult: Codable, Sendable {
         let simulators: [String]
     }
 

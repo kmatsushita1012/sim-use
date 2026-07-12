@@ -20,7 +20,7 @@ public struct IOSSimRecordVideoCommand: SimUseExecutableCommand {
         abstract: "Record the iOS Simulator display to an MP4 file using H.264 encoding"
     )
 
-    public struct ExecutionResult: Codable {
+    public struct ExecutionResult: Codable, Sendable {
         public let path: String
         public init(path: String) {
             self.path = path
