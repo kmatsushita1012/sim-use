@@ -250,3 +250,84 @@ public struct SwipeResult: Codable, Equatable, Sendable {
         self.coordinates = coordinates
     }
 }
+
+/// Application-facing typed request for iOS gesture presets. The backend's
+/// `IOSSimGestureCommand.ExecutionResult` is intentionally not part of this
+/// API; callers receive `GestureResult` instead.
+public struct GestureRequest: SimUseRequest {
+    public typealias Output = GestureResult
+
+    public let preset: GesturePreset
+    public let screenWidth: Double?
+    public let screenHeight: Double?
+    public let duration: Double?
+    public let delta: Double?
+    public let scale: Double?
+    public let angle: Double?
+    public let centerX: Double?
+    public let centerY: Double?
+    public let radius: Double?
+    public let steps: Int
+    public let stepMs: Int?
+    public let preDelay: Double?
+    public let postDelay: Double?
+
+    public init(
+        preset: GesturePreset,
+        screenWidth: Double? = nil,
+        screenHeight: Double? = nil,
+        duration: Double? = nil,
+        delta: Double? = nil,
+        scale: Double? = nil,
+        angle: Double? = nil,
+        centerX: Double? = nil,
+        centerY: Double? = nil,
+        radius: Double? = nil,
+        steps: Int = 10,
+        stepMs: Int? = nil,
+        preDelay: Double? = nil,
+        postDelay: Double? = nil
+    ) {
+        self.preset = preset
+        self.screenWidth = screenWidth
+        self.screenHeight = screenHeight
+        self.duration = duration
+        self.delta = delta
+        self.scale = scale
+        self.angle = angle
+        self.centerX = centerX
+        self.centerY = centerY
+        self.radius = radius
+        self.steps = steps
+        self.stepMs = stepMs
+        self.preDelay = preDelay
+        self.postDelay = postDelay
+    }
+
+    public func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> GestureResult {
+        var command = IOSSimGestureCommand()
+        command.preset = preset
+        command.screenWidth = screenWidth
+        command.screenHeight = screenHeight
+        command.duration = duration
+        command.delta = delta
+        command.scale = scale
+        command.angle = angle
+        command.centerX = centerX
+        command.centerY = centerY
+        command.radius = radius
+        command.steps = steps
+        command.stepMs = stepMs
+        command.preDelay = preDelay
+        command.postDelay = postDelay
+        command.device.device = deviceID.rawValue
+        try command.resolveDeferredArguments()
+        try command.validate()
+        _ = try await command.execute()
+        return GestureResult()
+    }
+}
+
+public struct GestureResult: Codable, Equatable, Sendable {
+    public init() {}
+}

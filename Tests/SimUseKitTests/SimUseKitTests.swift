@@ -67,5 +67,11 @@ struct SimUseKitTests {
         var implementationName = IOSSimGestureCommand()
         implementationName.preset = .scrollDown
         #expect(implementationName.preset == .scrollDown)
+
+        let result: IOSSimGestureCommand.ExecutionResult = .init()
+        _ = result
+
+        let request = GestureRequest(preset: .scrollUp)
+        #expect(request.preset == .scrollUp)
     }
 }

@@ -8,6 +8,7 @@
 | iOS | `tap` | `IOSSimTapCommand` | yes | typed request | tap coordinates / advisory |
 | iOS | `long-press` | top-level `LongPress` → `IOSSimTapCommand` | yes | `LongPressRequest` | tap coordinates |
 | iOS | `swipe` | `IOSSimSwipeCommand` | yes | typed request | `SwipeCoordinates` |
+| iOS | `gesture` | `IOSSimGestureCommand` | yes | `GestureRequest` | `GestureResult` |
 | iOS | `touch` | `IOSSimTouchCommand` | yes | typed request + session events | empty result |
 | iOS | `type` | `IOSSimTypeCommand` | yes* | typed request | typed completion result |
 | iOS | `paste` | `IOSSimPasteCommand` | yes* | typed request | typed completion result |
