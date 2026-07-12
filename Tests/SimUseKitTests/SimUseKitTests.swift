@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import Testing
+import Foundation
 import SimUseCore
 import SimUseKit
 
@@ -52,5 +53,8 @@ struct SimUseKitTests {
         #expect(video.framesPerSecond == 10)
         #expect(video.quality == 80)
         #expect(video.scale == 1.0)
+
+        let screenshot = ScreenshotResult(data: Data([0x89, 0x50, 0x4E, 0x47]))
+        #expect(screenshot.data.count == 4)
     }
 }
