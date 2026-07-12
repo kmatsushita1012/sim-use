@@ -365,7 +365,6 @@ launch `sim-use`, parse CLI arguments, or use the daemon socket.
 
 ```swift
 import SimUseKit
-import SimUseCore
 
 func exerciseSimulator(_ id: String) async throws {
     let client = SimUseClient()
