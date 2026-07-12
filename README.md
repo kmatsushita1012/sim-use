@@ -434,6 +434,20 @@ For a repeatable comparison between daemon CLI, in-process CLI, and the
 Swift wrapper, use [`scripts/benchmark-swift-api.sh`](scripts/benchmark-swift-api.sh)
 with a booted Simulator.
 
+To measure continuous scrolling input directly, build the sample and run:
+
+```bash
+swift build --package-path Examples/SimUseMacOSClient
+Examples/SimUseMacOSClient/.build/arm64-apple-macosx/debug/SimUseMacOSClient \
+  "$UDID" --benchmark-touch
+```
+
+The benchmark reports session setup, each event interval, the total for
+`touchDown(A) → touchDown(B) → touchDown(C) → touchUp(C)` on one HID session,
+and a comparable `swipe` total. `HIDEvent.touchMove` is also available for
+readability; on the fixed idb revision it is dispatched as another
+`touchDownAt` on the same connection.
+
 
 ## Viewer
 

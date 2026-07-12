@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import Darwin
+import Foundation
+import SimUseCore
 import SimUseKit
 
 @main
@@ -13,6 +15,12 @@ struct SimUseMacOSClient {
 
         let device = SimulatorID(CommandLine.arguments[1])
         let client = SimUseClient()
+
+        if CommandLine.arguments.contains("--benchmark-touch") {
+            try await benchmarkTouch(device: device, client: client)
+            return
+        }
+
         let result = try await client.execute(DescribeUIRequest(), on: device)
         print(result.outline)
 
@@ -27,5 +35,57 @@ struct SimUseMacOSClient {
             .touchMove(x: 180, y: 300),
             .touchUp(x: 180, y: 300),
         ])
+    }
+
+    private static func benchmarkTouch(device: SimulatorID, client: SimUseClient) async throws {
+        let sessionStart = Date.timeIntervalSinceReferenceDate
+        let session = try await client.openSession(for: device)
+        let sessionSetup = Date.timeIntervalSinceReferenceDate - sessionStart
+        let events: [HIDEvent] = [
+            .touchDown(x: 100, y: 500),
+            .touchDown(x: 100, y: 450),
+            .touchDown(x: 100, y: 400),
+            .touchUp(x: 100, y: 400),
+        ]
+
+        let continuousStart = Date.timeIntervalSinceReferenceDate
+        let timings = try await session.sendTimed(events)
+        let continuousTotal = Date.timeIntervalSinceReferenceDate - continuousStart
+
+        print("continuous_touch session_setup=\(format(sessionSetup))s total=\(format(continuousTotal))s")
+        for timing in timings {
+            print("event[\(timing.index)] \(eventName(timing.event)) interval=\(format(timing.interval))s elapsed=\(format(timing.elapsed))s")
+        }
+
+        let swipeStart = Date.timeIntervalSinceReferenceDate
+        _ = try await client.execute(
+            SwipeRequest(
+                coordinates: SwipeCoordinates(startX: 100, startY: 500, endX: 100, endY: 400),
+                duration: 0.2,
+                delta: 0.05
+            ),
+            on: device
+        )
+        let swipeTotal = Date.timeIntervalSinceReferenceDate - swipeStart
+        print("swipe total=\(format(swipeTotal))s")
+    }
+
+    private static func format(_ seconds: TimeInterval) -> String {
+        String(format: "%.6f", seconds)
+    }
+
+    private static func eventName(_ event: HIDEvent) -> String {
+        switch event {
+        case .touchDown: return "touchDown"
+        case .touchMove: return "touchMove(touchDownAt)"
+        case .touchUp: return "touchUp"
+        case .tap: return "tap"
+        case .swipe: return "swipe"
+        case .keyDown: return "keyDown"
+        case .keyUp: return "keyUp"
+        case .buttonDown: return "buttonDown"
+        case .buttonUp: return "buttonUp"
+        case .delay: return "delay"
+        }
     }
 }

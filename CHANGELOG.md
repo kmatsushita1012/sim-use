@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and Swift wrapper latency.
 - Added direct adapters for cross-platform `long-press` and `app-state`, plus
   an application-facing asynchronous JPEG frame stream for iOS video.
+- Added per-event HID timing through `sendTimed` and a sample benchmark for
+  same-session continuous touch-down scrolling versus `swipe`.
 
 ## [0.10.0] - 2026-07-09
 

@@ -68,21 +68,44 @@ public final class SimUseClient {
         _ events: [HIDEvent],
         on deviceID: SimulatorID
     ) async throws {
+        _ = try await sendTimed(events, on: deviceID)
+    }
+
+    /// Sends events over one cached session and records the time at which each
+    /// event has completed. The returned values measure the public API call,
+    /// including backend stabilization and transport time.
+    public func sendTimed(
+        _ events: [HIDEvent],
+        on deviceID: SimulatorID
+    ) async throws -> [HIDEventTiming] {
         try validate(deviceID)
-        guard !events.isEmpty else { return }
+        guard !events.isEmpty else { return [] }
         try validate(events)
 
         do {
             var session = try await session(for: deviceID)
             let logger = SimUseLogger()
-            for event in events {
+            let start = Date.timeIntervalSinceReferenceDate
+            var previous = start
+            var timings: [HIDEventTiming] = []
+            timings.reserveCapacity(events.count)
+            for (index, event) in events.enumerated() {
                 session = try await HIDInteractor.performHIDEventReturningSession(
                     event.makeBackendEvent(),
                     in: session,
                     logger: logger
                 )
                 hidSessions[deviceID.rawValue] = session
+                let now = Date.timeIntervalSinceReferenceDate
+                timings.append(HIDEventTiming(
+                    index: index,
+                    event: event,
+                    interval: now - previous,
+                    elapsed: now - start
+                ))
+                previous = now
             }
+            return timings
         } catch {
             hidSessions.removeValue(forKey: deviceID.rawValue)
             throw SimUseError.map(error, deviceID: deviceID.rawValue)
@@ -176,6 +199,10 @@ public final class SimulatorSession {
         try await client.send(events, on: deviceID)
     }
 
+    public func sendTimed(_ events: [HIDEvent]) async throws -> [HIDEventTiming] {
+        try await client.sendTimed(events, on: deviceID)
+    }
+
     public func invalidate() {
         client.invalidateSession(for: deviceID)
     }
@@ -246,5 +273,20 @@ public enum HIDEvent: Sendable {
         case let .delay(seconds):
             return FBSimulatorHIDEvent.delay(seconds)
         }
+    }
+}
+
+/// Timing for one event in a serialized HID sequence.
+public struct HIDEventTiming: Sendable {
+    public let index: Int
+    public let event: HIDEvent
+    public let interval: TimeInterval
+    public let elapsed: TimeInterval
+
+    public init(index: Int, event: HIDEvent, interval: TimeInterval, elapsed: TimeInterval) {
+        self.index = index
+        self.event = event
+        self.interval = interval
+        self.elapsed = elapsed
     }
 }
