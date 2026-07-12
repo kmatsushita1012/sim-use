@@ -10,7 +10,6 @@ public struct ScreenshotRequest: SimUseRequest {
 
     public init() {}
 
-    @MainActor
     public func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> ScreenshotResult {
         if PlatformRouter.looksLikeAndroid(deviceID.rawValue) {
             return ScreenshotResult(data: try AndroidScreenshotCommand.performScreenshot(udid: deviceID.rawValue))

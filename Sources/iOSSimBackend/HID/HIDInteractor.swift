@@ -5,10 +5,9 @@ import FBSimulatorControl
 import SimUseCore
 
 // MARK: - HID Interactor
-@MainActor
 public struct HIDInteractor {
 
-    public struct Session {
+    public struct Session: @unchecked Sendable {
         public let simulatorUDID: String
         public let simulator: FBSimulator
         public let hid: FBSimulatorHID
@@ -25,6 +24,13 @@ public struct HIDInteractor {
     }
 
     private static var hidConnections: [String: CachedConnection] = [:]
+    private static let hidConnectionsLock = NSLock()
+
+    private static func withConnectionLock<T>(_ body: () -> T) -> T {
+        hidConnectionsLock.lock()
+        defer { hidConnectionsLock.unlock() }
+        return body()
+    }
 
     /// Configurable stabilization delay to ensure HID events are fully processed
     /// Can be set via SIM_USE_HID_STABILIZATION_MS environment variable
@@ -148,7 +154,7 @@ public struct HIDInteractor {
     // Get or create a cached HID connection (matching CompanionLib's connectToHID behavior)
     private static func getOrCreateHIDConnection(for simulator: FBSimulator, logger: SimUseLogger) async throws -> FBSimulatorHID {
         let currentToken = HIDBootIdentity.token(dataDirectory: simulator.dataDirectory)
-        if let cached = hidConnections[simulator.udid] {
+        if let cached = withConnectionLock({ hidConnections[simulator.udid] }) {
             if HIDBootIdentity.isReusable(cachedToken: cached.bootToken, currentToken: currentToken) {
                 logger.info().log("Using existing HID connection for simulator \(simulator.udid)")
                 return cached.hid
@@ -157,21 +163,23 @@ public struct HIDInteractor {
             // unreadable) since the connection was made: the cached
             // handle's mach port is dead and must not be sent through.
             logger.info().log("Boot token changed for simulator \(simulator.udid); discarding cached HID connection")
-            hidConnections.removeValue(forKey: simulator.udid)
+            _ = withConnectionLock { hidConnections.removeValue(forKey: simulator.udid) }
         }
 
         logger.info().log("Creating new HID connection for simulator \(simulator.udid)...")
         let hidFuture = simulator.connectToHID()
         let hid = try await FutureBridge.value(hidFuture)
 
-        hidConnections[simulator.udid] = CachedConnection(hid: hid, bootToken: currentToken)
+        withConnectionLock {
+            hidConnections[simulator.udid] = CachedConnection(hid: hid, bootToken: currentToken)
+        }
         logger.info().log("HID connection created and cached for simulator \(simulator.udid)")
 
         return hid
     }
 
     public static func clearHIDConnections() {
-        hidConnections.removeAll()
+        withConnectionLock { hidConnections.removeAll() }
     }
 
     /// Drop the cached HID connection for a single UDID. Used by
@@ -181,6 +189,6 @@ public struct HIDInteractor {
     /// even if the same UDID is re-booted before the daemon process
     /// itself terminates.
     public static func clearHIDConnection(for simulatorUDID: String) {
-        hidConnections.removeValue(forKey: simulatorUDID)
+        _ = withConnectionLock { hidConnections.removeValue(forKey: simulatorUDID) }
     }
 }

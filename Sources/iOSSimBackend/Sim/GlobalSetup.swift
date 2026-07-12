@@ -5,7 +5,6 @@ import FBSimulatorControl
 import ObjectiveC // For objc_lookUpClass
 import SimUseCore
 
-@MainActor
 public func performGlobalSetup(logger: SimUseLogger) async throws {
     logger.info().log("Performing global setup...")
 
@@ -58,4 +57,4 @@ public func performGlobalSetup(logger: SimUseLogger) async throws {
         throw CLIError(errorDescription: errorMessage)
     }
     logger.info().log("Global setup complete.")
-} 
+}

@@ -367,7 +367,6 @@ launch `sim-use`, parse CLI arguments, or use the daemon socket.
 import SimUseKit
 import SimUseCore
 
-@MainActor
 func exerciseSimulator(_ id: String) async throws {
     let client = SimUseClient()
     let device = SimulatorID(id)
@@ -407,6 +406,21 @@ func exerciseSimulator(_ id: String) async throws {
         .touchMove(x: 180, y: 300),
         .touchUp(x: 180, y: 300),
     ])
+}
+```
+
+`SimUseKit` is not `MainActor` isolated. Its mutable Simulator state is owned
+by an actor per Simulator ID, so the same API can be called from a background
+task. If the result is used by SwiftUI, update view state explicitly on the
+application's `MainActor`.
+
+```swift
+let result = try await Task.detached {
+    try await client.execute(DescribeUIRequest(), on: device)
+}.value
+
+await MainActor.run {
+    viewModel.outline = result.outline
 }
 ```
 

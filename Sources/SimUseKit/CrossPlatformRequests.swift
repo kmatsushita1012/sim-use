@@ -18,7 +18,6 @@ public struct LongPressRequest: SimUseRequest {
         self.duration = duration
     }
 
-    @MainActor
     public func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> TapResult {
         guard duration.isFinite, duration > 0, duration <= 10 else {
             throw SimUseError.invalidRequest("Long-press duration must be greater than 0 and at most 10 seconds.")
@@ -87,7 +86,6 @@ public struct AppStateRequest: SimUseRequest {
         self.reset = reset
     }
 
-    @MainActor
     public func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> AppStateResult {
         let snapshot: AppSnapshot?
         let platform: String
@@ -102,9 +100,8 @@ public struct AppStateRequest: SimUseRequest {
             throw SimUseError.transient("Could not read the running-process list from \(deviceID.rawValue).")
         }
 
-        let tracker = client.livenessTracker(for: deviceID)
         if reset {
-            tracker.reset(to: snapshot, now: Date())
+            await client.resetLiveness(for: deviceID, to: snapshot)
         }
 
         let apps = snapshot.appsByPid

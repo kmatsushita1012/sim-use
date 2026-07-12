@@ -79,7 +79,6 @@ public enum HIDPerformRecovery: Equatable {
     /// Injected closures keep the FB* types out of unit tests;
     /// `HIDInteractor.performHIDEvent` binds them to
     /// `clearHIDConnection(for:)` and a `makeSession` rebuild.
-    @MainActor
     public static func recover(
         from error: Error,
         invalidate: () -> Void,

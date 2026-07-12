@@ -11,7 +11,6 @@ public struct TouchSequenceRequest: SimUseRequest {
         self.events = events
     }
 
-    @MainActor
     public func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> EmptyCommandResult {
         try await client.send(events, on: deviceID)
         return EmptyCommandResult()
@@ -44,7 +43,6 @@ public struct DescribeUIRequest: SimUseRequest {
         self.seedCellHeight = seedCellHeight
     }
 
-    @MainActor
     public func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> UIResult {
         var command = IOSSimDescribeUICommand()
         command.point = point
@@ -167,7 +165,6 @@ public struct TapRequest: SimUseRequest {
         self.pollInterval = pollInterval
     }
 
-    @MainActor
     public func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> TapResult {
         var command = IOSSimTapCommand()
         command.alias = alias
@@ -228,7 +225,6 @@ public struct SwipeRequest: SimUseRequest {
         self.postDelay = postDelay
     }
 
-    @MainActor
     public func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> SwipeResult {
         var command = IOSSimSwipeCommand()
         command.coordinates.startX = coordinates.startX

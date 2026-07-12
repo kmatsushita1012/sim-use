@@ -61,7 +61,7 @@ public extension SimUseClient {
 
             let interval = 1.0 / Double(configuration.framesPerSecond)
             return AsyncThrowingStream { continuation in
-                let task = Task { @MainActor in
+                let task = Task {
                     defer { continuation.finish() }
                     while !Task.isCancelled {
                         let started = Date()

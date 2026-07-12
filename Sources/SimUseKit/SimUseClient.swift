@@ -1,20 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
+import Dispatch
 import FBSimulatorControl
 import SimUseCore
 import iOSSimBackend
 
-/// A serial, application-facing client for simulator operations.
+/// A concurrency-safe, application-facing client for simulator operations.
 ///
 /// The client deliberately does not start a CLI process, parse command-line
 /// arguments, or use the daemon socket. All operations call the existing
-/// backend implementations directly. Main-actor isolation matches
-/// FBSimulatorControl's requirement and also serializes operations so two
-/// concurrent requests cannot interleave HID events for one simulator.
-@MainActor
-public final class SimUseClient {
-    private var hidSessions: [String: HIDInteractor.Session] = [:]
-    private var livenessTrackers: [String: ProcessLivenessTracker] = [:]
+/// backend implementations directly. FBSimulatorControl's state is isolated
+/// behind one worker actor per
+/// simulator. UI code does not need to run on MainActor to use this client.
+public actor SimUseClient {
+    private var workers: [String: SimulatorWorker] = [:]
 
     public init() {}
 
@@ -23,8 +22,9 @@ public final class SimUseClient {
     /// client and is invalidated automatically when an event fails.
     public func openSession(for deviceID: SimulatorID) async throws -> SimulatorSession {
         try validate(deviceID)
-        _ = try await session(for: deviceID)
-        return SimulatorSession(deviceID: deviceID, client: self)
+        let worker = worker(for: deviceID)
+        try await worker.open()
+        return SimulatorSession(deviceID: deviceID, worker: worker)
     }
 
     /// Sends a typed command request directly through its backend adapter.
@@ -83,66 +83,37 @@ public final class SimUseClient {
         try validate(events)
 
         do {
-            var session = try await session(for: deviceID)
-            let logger = SimUseLogger()
-            let start = Date.timeIntervalSinceReferenceDate
-            var previous = start
-            var timings: [HIDEventTiming] = []
-            timings.reserveCapacity(events.count)
-            for (index, event) in events.enumerated() {
-                session = try await HIDInteractor.performHIDEventReturningSession(
-                    event.makeBackendEvent(),
-                    in: session,
-                    logger: logger
-                )
-                hidSessions[deviceID.rawValue] = session
-                let now = Date.timeIntervalSinceReferenceDate
-                timings.append(HIDEventTiming(
-                    index: index,
-                    event: event,
-                    interval: now - previous,
-                    elapsed: now - start
-                ))
-                previous = now
-            }
-            return timings
+            return try await worker(for: deviceID).sendTimed(events)
         } catch {
-            hidSessions.removeValue(forKey: deviceID.rawValue)
             throw SimUseError.map(error, deviceID: deviceID.rawValue)
         }
     }
 
     /// Explicitly drops the cached HID session for one simulator.
-    public func invalidateSession(for deviceID: SimulatorID) {
-        hidSessions.removeValue(forKey: deviceID.rawValue)
-        HIDInteractor.clearHIDConnection(for: deviceID.rawValue)
+    public func invalidateSession(for deviceID: SimulatorID) async {
+        await worker(for: deviceID).invalidate()
     }
 
     /// Drops all cached HID sessions owned by this client.
-    public func invalidateAllSessions() {
-        hidSessions.removeAll()
+    public func invalidateAllSessions() async {
+        for worker in workers.values {
+            await worker.invalidate()
+        }
+        workers.removeAll()
         HIDInteractor.clearHIDConnections()
     }
 
-    fileprivate func session(for deviceID: SimulatorID) async throws -> HIDInteractor.Session {
-        if let session = hidSessions[deviceID.rawValue] {
-            return session
-        }
-        let session = try await HIDInteractor.makeSession(
-            for: deviceID.rawValue,
-            logger: SimUseLogger()
-        )
-        hidSessions[deviceID.rawValue] = session
-        return session
+    func resetLiveness(for deviceID: SimulatorID, to snapshot: AppSnapshot) async {
+        await worker(for: deviceID).resetLiveness(to: snapshot, now: Date())
     }
 
-    func livenessTracker(for deviceID: SimulatorID) -> ProcessLivenessTracker {
-        if let tracker = livenessTrackers[deviceID.rawValue] {
-            return tracker
+    private func worker(for deviceID: SimulatorID) -> SimulatorWorker {
+        if let worker = workers[deviceID.rawValue] {
+            return worker
         }
-        let tracker = ProcessLivenessTracker()
-        livenessTrackers[deviceID.rawValue] = tracker
-        return tracker
+        let worker = SimulatorWorker(deviceID: deviceID)
+        workers[deviceID.rawValue] = worker
+        return worker
     }
 
     private func validate(_ deviceID: SimulatorID) throws {
@@ -185,26 +156,126 @@ public final class SimUseClient {
     }
 }
 
-@MainActor
-public final class SimulatorSession {
+public final class SimulatorSession: @unchecked Sendable {
     public let deviceID: SimulatorID
-    private unowned let client: SimUseClient
+    private let worker: SimulatorWorker
 
-    fileprivate init(deviceID: SimulatorID, client: SimUseClient) {
+    fileprivate init(deviceID: SimulatorID, worker: SimulatorWorker) {
         self.deviceID = deviceID
-        self.client = client
+        self.worker = worker
     }
 
     public func send(_ events: [HIDEvent]) async throws {
-        try await client.send(events, on: deviceID)
+        try await worker.send(events)
     }
 
     public func sendTimed(_ events: [HIDEvent]) async throws -> [HIDEventTiming] {
-        try await client.sendTimed(events, on: deviceID)
+        try await worker.sendTimed(events)
     }
 
-    public func invalidate() {
-        client.invalidateSession(for: deviceID)
+    public func invalidate() async {
+        await worker.invalidate()
+    }
+}
+
+/// Owns all mutable state associated with one simulator. A separate worker
+/// is created for every UDID, so operations for different simulators can
+/// proceed concurrently while HID events for one simulator remain ordered.
+private actor SimulatorWorker {
+    private let deviceID: SimulatorID
+    private let executor: DispatchSerialQueue
+    private var hidSession: HIDInteractor.Session?
+    private let livenessTracker = ProcessLivenessTracker()
+
+    init(deviceID: SimulatorID) {
+        self.deviceID = deviceID
+        self.executor = DispatchSerialQueue(label: "com.simuse.simulator.\(deviceID.rawValue)")
+    }
+
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        executor.asUnownedSerialExecutor()
+    }
+
+    func open() async throws {
+        if hidSession == nil {
+            hidSession = try await HIDInteractor.makeSession(
+                for: deviceID.rawValue,
+                logger: SimUseLogger()
+            )
+        }
+    }
+
+    func send(_ events: [HIDEvent]) async throws {
+        _ = try await sendTimed(events)
+    }
+
+    func sendTimed(_ events: [HIDEvent]) async throws -> [HIDEventTiming] {
+        guard !events.isEmpty else { return [] }
+        try validate(events)
+        do {
+            if hidSession == nil {
+                try await open()
+            }
+            guard var session = hidSession else {
+                throw SimUseError.staleSession(deviceID: deviceID.rawValue, underlying: "HID session was not created.")
+            }
+            let logger = SimUseLogger()
+            let start = Date.timeIntervalSinceReferenceDate
+            var previous = start
+            var timings: [HIDEventTiming] = []
+            timings.reserveCapacity(events.count)
+            for (index, event) in events.enumerated() {
+                session = try await HIDInteractor.performHIDEventReturningSession(
+                    event.makeBackendEvent(),
+                    in: session,
+                    logger: logger
+                )
+                hidSession = session
+                let now = Date.timeIntervalSinceReferenceDate
+                timings.append(HIDEventTiming(index: index, event: event, interval: now - previous, elapsed: now - start))
+                previous = now
+            }
+            return timings
+        } catch {
+            hidSession = nil
+            throw error
+        }
+    }
+
+    func invalidate() {
+        hidSession = nil
+        HIDInteractor.clearHIDConnection(for: deviceID.rawValue)
+    }
+
+    func resetLiveness(to snapshot: AppSnapshot, now: Date) {
+        livenessTracker.reset(to: snapshot, now: now)
+    }
+
+    private func validate(_ events: [HIDEvent]) throws {
+        for event in events {
+            switch event {
+            case let .touchDown(x, y), let .touchMove(x, y), let .touchUp(x, y), let .tap(x, y):
+                try validateCoordinate(x, y)
+            case let .swipe(startX, startY, endX, endY, delta, duration):
+                try validateCoordinate(startX, startY)
+                try validateCoordinate(endX, endY)
+                guard delta.isFinite, delta > 0, duration.isFinite, duration > 0 else {
+                    throw SimUseError.invalidRequest("Swipe delta and duration must be finite positive values.")
+                }
+            case let .keyDown(keyCode), let .keyUp(keyCode):
+                guard keyCode <= 255 else { throw SimUseError.invalidRequest("HID keycode must be between 0 and 255.") }
+            case let .buttonDown(button), let .buttonUp(button):
+                guard (1...5).contains(button) else { throw SimUseError.invalidRequest("HID button must be between 1 and 5.") }
+            case let .delay(seconds):
+                guard seconds.isFinite, seconds >= 0 else { throw SimUseError.invalidRequest("HID delay must be a finite non-negative value.") }
+            }
+        }
+    }
+
+    private func validateCoordinate(_ x: Double, _ y: Double) throws {
+        guard x.isFinite, y.isFinite, x >= 0, y >= 0 else {
+            throw SimUseError.invalidRequest("HID coordinates must be finite non-negative values.")
+        }
     }
 }
 
@@ -223,7 +294,6 @@ public struct SimulatorID: Hashable, Codable, Sendable, ExpressibleByStringLiter
 public protocol SimUseRequest {
     associatedtype Output: Sendable
 
-    @MainActor
     func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> Output
 }
 

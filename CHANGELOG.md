@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added per-event HID timing through `sendTimed` and a sample benchmark for
   same-session continuous touch-down scrolling versus `swipe`.
 
+### Changed
+
+- Removed `MainActor` isolation from the `SimUseKit` application API. Simulator
+  state is now owned by a per-UDID worker actor with a serial executor, while
+  UI state remains the macOS application's responsibility.
+
 ## [0.10.0] - 2026-07-09
 
 ### Added

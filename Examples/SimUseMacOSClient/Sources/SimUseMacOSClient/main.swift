@@ -5,7 +5,6 @@ import SimUseCore
 import SimUseKit
 
 @main
-@MainActor
 struct SimUseMacOSClient {
     static func main() async throws {
         guard CommandLine.arguments.count >= 2 else {

@@ -6,7 +6,6 @@ import FBSimulatorControl
 
 /// Centralized function to obtain and configure an FBSimulatorSet.
 /// This ensures that the necessary configurations, logging, and event reporting are set up consistently.
-@MainActor
 public func getSimulatorSet(deviceSetPath: String?, logger: FBControlCoreLogger, reporter: FBEventReporter) async throws -> FBSimulatorSet {
     let controlConfig = FBSimulatorControlConfiguration(
         deviceSetPath: deviceSetPath,
@@ -28,4 +27,4 @@ public func getSimulatorSet(deviceSetPath: String?, logger: FBControlCoreLogger,
 
 // MARK: - Empty Event Reporter (Placeholder)
 
-// ... (rest of the file, including EmptyEventReporter, remains unchanged) 
+// ... (rest of the file, including EmptyEventReporter, remains unchanged)
