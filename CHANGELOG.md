@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the application-facing `TextRequest` API for direct text input
+  without constructing the CLI `IOSSimTypeCommand` / ArgumentParser type.
 - Added the `SimUseKit` macOS library product. It exposes typed direct Swift
   requests, a generic interface for all existing `SimUseExecutableCommand`
   implementations, Simulator-scoped HID sessions, and continuous HID event

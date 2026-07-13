@@ -391,6 +391,8 @@ func exerciseSimulator(_ id: String) async throws {
         on: device
     )
 
+    _ = try await client.execute(TextRequest("Hello World!"), on: device)
+
     let appState = try await client.execute(
         AppStateRequest(bundleID: "com.example.app"),
         on: device
@@ -417,6 +419,10 @@ func exerciseSimulator(_ id: String) async throws {
 by an actor per Simulator ID, so the same API can be called from a background
 task. If the result is used by SwiftUI, update view state explicitly on the
 application's `MainActor`.
+
+アプリからの文字入力には `TextRequest` を使用してください。`IOSSimTypeCommand`
+や `IOSTypeCommand` は CLI 用の ArgumentParser 型なので、アプリ側で直接生成して
+`device` を変更する用途には使いません。
 
 ```swift
 let result = try await Task.detached {

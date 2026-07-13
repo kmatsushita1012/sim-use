@@ -57,6 +57,25 @@ struct SimUseKitTests {
         #expect(screenshot.data.count == 4)
     }
 
+    @Test("text input is represented by an application-facing request")
+    func textRequest() {
+        let request = TextRequest("Hello!")
+        #expect(request.text == "Hello!")
+    }
+
+    @Test("text request rejects unsupported characters before dispatch")
+    func textRequestRejectsUnsupportedCharacters() async {
+        let request = TextRequest("こんにちは")
+        do {
+            _ = try await request.execute(on: SimulatorID("SIM-1"), using: SimUseClient())
+            Issue.record("Expected unsupported text to fail")
+        } catch let error as TextRequestError {
+            #expect(error == .unsupportedCharacter("こ"))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     @Test("legacy gesture aliases are usable through SimUseKit alone")
     func legacyGestureAlias() {
         var command = IOSGestureCommand()
