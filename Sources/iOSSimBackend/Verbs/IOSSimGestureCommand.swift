@@ -115,8 +115,7 @@ public struct IOSSimGestureCommand: SimUseExecutableCommand {
         self.stepMs = stepMs
         self.preDelay = preDelay
         self.postDelay = postDelay
-        self.device = DeviceOptions()
-        self.device.device = deviceID
+        self.device = DeviceOptions(device: deviceID)
         self.json = JSONOutputOptions()
     }
 

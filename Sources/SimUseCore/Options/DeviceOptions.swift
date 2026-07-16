@@ -50,7 +50,17 @@ public struct DeviceOptions: ParsableArguments {
     /// that would force every call-site to unwrap.
     public var resolved: String = ""
 
-    public init() {}
+    public init() {
+        self.device = nil
+        self.udid = nil
+        self.resolved = ""
+    }
+
+    public init(device: String?, udid: String? = nil, resolved: String = "") {
+        self.device = device
+        self.udid = udid
+        self.resolved = resolved
+    }
 
     public mutating func resolve() throws {
         let explicit = try Self.selectExplicit(device: device, udid: udid)
