@@ -305,22 +305,23 @@ public struct GestureRequest: SimUseRequest {
     }
 
     public func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> GestureResult {
-        var command = IOSSimGestureCommand()
-        command.preset = preset
-        command.screenWidth = screenWidth
-        command.screenHeight = screenHeight
-        command.duration = duration
-        command.delta = delta
-        command.scale = scale
-        command.angle = angle
-        command.centerX = centerX
-        command.centerY = centerY
-        command.radius = radius
-        command.steps = steps
-        command.stepMs = stepMs
-        command.preDelay = preDelay
-        command.postDelay = postDelay
-        command.device.device = deviceID.rawValue
+        var command = IOSSimGestureCommand(
+            preset: preset,
+            screenWidth: screenWidth,
+            screenHeight: screenHeight,
+            duration: duration,
+            delta: delta,
+            scale: scale,
+            angle: angle,
+            centerX: centerX,
+            centerY: centerY,
+            radius: radius,
+            steps: steps,
+            stepMs: stepMs,
+            preDelay: preDelay,
+            postDelay: postDelay,
+            deviceID: deviceID.rawValue
+        )
         try command.resolveDeferredArguments()
         try command.validate()
         _ = try await command.execute()

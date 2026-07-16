@@ -81,6 +81,45 @@ public struct IOSSimGestureCommand: SimUseExecutableCommand {
 
     public init() {}
 
+    /// Creates a fully initialized command for in-process callers.
+    /// ArgumentParser's synthesized storage is not populated by `init()`;
+    /// reading an uninitialized `@Argument` later raises a runtime error.
+    public init(
+        preset: GesturePreset,
+        screenWidth: Double? = nil,
+        screenHeight: Double? = nil,
+        duration: Double? = nil,
+        delta: Double? = nil,
+        scale: Double? = nil,
+        angle: Double? = nil,
+        centerX: Double? = nil,
+        centerY: Double? = nil,
+        radius: Double? = nil,
+        steps: Int = 10,
+        stepMs: Int? = nil,
+        preDelay: Double? = nil,
+        postDelay: Double? = nil,
+        deviceID: String
+    ) {
+        self.preset = preset
+        self.screenWidth = screenWidth
+        self.screenHeight = screenHeight
+        self.duration = duration
+        self.delta = delta
+        self.scale = scale
+        self.angle = angle
+        self.centerX = centerX
+        self.centerY = centerY
+        self.radius = radius
+        self.steps = steps
+        self.stepMs = stepMs
+        self.preDelay = preDelay
+        self.postDelay = postDelay
+        self.device = DeviceOptions()
+        self.device.device = deviceID
+        self.json = JSONOutputOptions()
+    }
+
     public mutating func resolveDeferredArguments() throws {
         try device.resolve()
     }
