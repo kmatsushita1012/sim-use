@@ -15,7 +15,7 @@ public struct ScreenshotRequest: SimUseRequest {
             return ScreenshotResult(data: try AndroidScreenshotCommand.performScreenshot(udid: deviceID.rawValue))
         }
 
-        let logger = SimUseLogger()
+        let logger = SimUseLogger(silent: true)
         try await performGlobalSetup(logger: logger)
         let simulatorSet = try await getSimulatorSet(
             deviceSetPath: nil,

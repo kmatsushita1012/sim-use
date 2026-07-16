@@ -45,7 +45,7 @@ public extension SimUseClient {
                 quality: configuration.quality,
                 scale: configuration.scale
             )
-            let logger = SimUseLogger()
+            let logger = SimUseLogger(silent: true)
             try await performGlobalSetup(logger: logger)
             let simulatorSet = try await getSimulatorSet(
                 deviceSetPath: nil,

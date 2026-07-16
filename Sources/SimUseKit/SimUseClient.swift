@@ -200,7 +200,7 @@ private actor SimulatorWorker {
         if hidSession == nil {
             hidSession = try await HIDInteractor.makeSession(
                 for: deviceID.rawValue,
-                logger: SimUseLogger()
+                logger: SimUseLogger(silent: true)
             )
         }
     }
@@ -219,7 +219,7 @@ private actor SimulatorWorker {
             guard var session = hidSession else {
                 throw SimUseError.staleSession(deviceID: deviceID.rawValue, underlying: "HID session was not created.")
             }
-            let logger = SimUseLogger()
+            let logger = SimUseLogger(silent: true)
             let start = Date.timeIntervalSinceReferenceDate
             var previous = start
             var timings: [HIDEventTiming] = []
