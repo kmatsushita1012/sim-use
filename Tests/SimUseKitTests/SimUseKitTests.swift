@@ -63,6 +63,12 @@ struct SimUseKitTests {
         #expect(request.text == "Hello!")
     }
 
+    @Test("GesturePreset is directly visible from SimUseKit")
+    func gesturePresetIsPublic() {
+        let preset: GesturePreset = .scrollUp
+        #expect(preset == .scrollUp)
+    }
+
     @Test("text request rejects unsupported characters before dispatch")
     func textRequestRejectsUnsupportedCharacters() async {
         let request = TextRequest("こんにちは")

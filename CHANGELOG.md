@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   applied the same value-type constraint to all built-in iOS and Android
   command results.
 
+### Fixed
+
+- Fixed `GesturePreset` visibility for macOS clients by exposing it explicitly
+  through the `SimUseKit` public facade.
+
 ## [0.10.0] - 2026-07-09
 
 ### Added

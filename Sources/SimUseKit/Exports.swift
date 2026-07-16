@@ -6,3 +6,8 @@
 @_exported import SimUseCore
 @_exported import iOSSimBackend
 @_exported import AndroidBackend
+
+/// Public facade for the gesture preset value used by application-facing
+/// requests. Keep this explicit so `import SimUseKit` is sufficient even
+/// when a client does not import the implementation target directly.
+public typealias GesturePreset = SimUseCore.GesturePreset

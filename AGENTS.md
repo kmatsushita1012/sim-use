@@ -5,6 +5,12 @@
 - Follow Swift best practices and match the style of surrounding code.
 - When adding or removing commands/options, update the README and `skills/sim-use/SKILL.md`.
 
+## Public SimUseKit API verification
+- Any type used by a public `SimUseKit` request, result, or application-facing example must be explicitly public and reachable with `import SimUseKit` alone.
+- Do not verify public API visibility only from inside `SimUseKit` or an implementation target. Add a test that imports only `SimUseKit` and directly names every newly exposed type, including enums such as `GesturePreset`.
+- Before reporting completion, compile and run the public API test target. If the consuming macOS app is available, also build that target to catch package import and module-cache issues.
+- Prefer explicit public facade declarations or typealiases in `Sources/SimUseKit/Exports.swift` for shared implementation types that form part of the application API.
+
 ## Changelog
 `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Add entries under `## [Unreleased]` as you land changes. Subsection order: `### Added` / `### Changed` / `### Fixed` / `### Removed`. Never modify already-released version sections.
 
