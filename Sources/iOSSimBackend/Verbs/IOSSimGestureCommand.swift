@@ -178,7 +178,13 @@ public struct IOSSimGestureCommand: SimUseExecutableCommand {
     }
 
     public func execute() async throws -> ExecutionResult {
-        let logger = SimUseLogger()
+        try await execute(logger: SimUseLogger())
+    }
+
+    /// Executes the gesture with a caller-provided logger. Application-facing
+    /// APIs use a silent logger; the CLI entry point above keeps its normal
+    /// progress output.
+    public func execute(logger: SimUseLogger) async throws -> ExecutionResult {
         try await setup(logger: logger)
         try await performGlobalSetup(logger: logger)
 

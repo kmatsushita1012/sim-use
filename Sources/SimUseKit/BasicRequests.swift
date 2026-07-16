@@ -324,7 +324,7 @@ public struct GestureRequest: SimUseRequest {
         )
         try command.resolveDeferredArguments()
         try command.validate()
-        _ = try await command.execute()
+        _ = try await command.execute(logger: SimUseLogger(silent: true))
         return GestureResult()
     }
 }
