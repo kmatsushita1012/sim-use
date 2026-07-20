@@ -47,7 +47,7 @@ actor SimulatorIOSurfaceCapture {
     func start(
         configuration: VideoStreamConfiguration,
         onFrame: @escaping @Sendable (VideoFrame) -> Void
-    ) throws {
+    ) async throws {
         guard phase == .stopped else { return }
         phase = .starting
         self.configuration = configuration
@@ -70,7 +70,7 @@ actor SimulatorIOSurfaceCapture {
                 throw SimulatorVideoCaptureError.ioUnavailable
             }
             ioClient = io
-            try wireUpFramebuffer()
+            try await wireUpFramebufferWithRetry()
             phase = .running
             startIdleTimer()
         } catch {
@@ -107,22 +107,39 @@ actor SimulatorIOSurfaceCapture {
         captureFrame(force: true)
     }
 
+    private func wireUpFramebufferWithRetry() async throws {
+        let maximumAttempts = 10
+        var lastError: Error?
+
+        for attempt in 0..<maximumAttempts {
+            do {
+                try wireUpFramebuffer()
+                return
+            } catch {
+                guard let captureError = error as? SimulatorVideoCaptureError,
+                      captureError.isRetryableFramebufferError else {
+                    throw error
+                }
+                lastError = error
+                guard attempt + 1 < maximumAttempts else { break }
+                try await Task.sleep(for: .milliseconds(200))
+            }
+        }
+
+        throw lastError ?? SimulatorVideoCaptureError.framebufferUnavailable("retry_exhausted")
+    }
+
     private func findFramebufferDescriptors(io: NSObject) throws -> [NSObject] {
         guard let ports = io.value(forKey: "deviceIOPorts") as? [NSObject] else {
             throw SimulatorVideoCaptureError.ioPortsUnavailable
         }
 
-        let portIdentifierSelector = NSSelectorFromString("portIdentifier")
         let descriptorSelector = NSSelectorFromString("descriptor")
         let surfaceSelector = NSSelectorFromString("framebufferSurface")
         var candidates: [NSObject] = []
 
         for port in ports {
-            guard port.responds(to: portIdentifierSelector),
-                  let identifier = port.perform(portIdentifierSelector)?
-                      .takeUnretainedValue(),
-                  "\(identifier)" == "com.apple.framebuffer.display",
-                  port.responds(to: descriptorSelector),
+            guard port.responds(to: descriptorSelector),
                   let descriptor = port.perform(descriptorSelector)?
                       .takeUnretainedValue() as? NSObject,
                   descriptor.responds(to: surfaceSelector) else {
@@ -132,15 +149,14 @@ actor SimulatorIOSurfaceCapture {
         }
 
         guard candidates.isEmpty == false else {
-            throw SimulatorVideoCaptureError.framebufferUnavailable
+            throw SimulatorVideoCaptureError.framebufferUnavailable("display_descriptor_not_found")
         }
         return candidates
     }
 
-    private func registerFrameCallbacks(descriptor: NSObject) throws {
+    private func registerFrameCallbacks(descriptor: AnyObject) throws {
         let selector = #selector(SimulatorFramebufferDescriptor.registerScreenCallbacks)
-        guard descriptor.responds(to: selector),
-              let descriptor = descriptor as? SimulatorFramebufferDescriptor else {
+        guard descriptor.responds(to: selector) else {
             throw SimulatorVideoCaptureError.frameCallbacksUnavailable
         }
 
@@ -259,11 +275,12 @@ actor SimulatorIOSurfaceCapture {
     private func stopCallbacks(clearIO: Bool) {
         let selector = NSSelectorFromString("unregisterScreenCallbacksWithUUID:")
         for descriptor in descriptors {
-            guard let uuid = callbackUUIDs[ObjectIdentifier(descriptor)],
-                  descriptor.responds(to: selector) else {
+            guard let uuid = callbackUUIDs[ObjectIdentifier(descriptor)] else {
                 continue
             }
-            descriptor.perform(selector, with: uuid)
+            if descriptor.responds(to: selector) {
+                descriptor.perform(selector, with: uuid)
+            }
         }
         callbackUUIDs.removeAll()
         descriptors.removeAll()
@@ -313,8 +330,17 @@ enum SimulatorVideoCaptureError: Error, LocalizedError, Sendable {
     case deviceNotBooted(String, state: String)
     case ioUnavailable
     case ioPortsUnavailable
-    case framebufferUnavailable
+    case framebufferUnavailable(String)
     case frameCallbacksUnavailable
+
+    var isRetryableFramebufferError: Bool {
+        switch self {
+        case .ioPortsUnavailable, .framebufferUnavailable:
+            true
+        case .deviceNotFound, .deviceNotBooted, .ioUnavailable, .frameCallbacksUnavailable:
+            false
+        }
+    }
 
     var errorDescription: String? {
         switch self {
@@ -326,8 +352,8 @@ enum SimulatorVideoCaptureError: Error, LocalizedError, Sendable {
             "Simulator display I/O is unavailable."
         case .ioPortsUnavailable:
             "Simulator display ports are unavailable."
-        case .framebufferUnavailable:
-            "Simulator framebuffer display is unavailable."
+        case let .framebufferUnavailable(details):
+            "Simulator framebuffer display is unavailable. (\(details))"
         case .frameCallbacksUnavailable:
             "Simulator framebuffer callbacks are unavailable."
         }
