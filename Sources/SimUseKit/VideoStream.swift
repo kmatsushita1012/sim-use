@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
-import Dispatch
-import CoreGraphics
-import FBSimulatorControl
-@preconcurrency import FBControlCore
-import ImageIO
-import iOSSimBackend
 
-public struct VideoStreamConfiguration: Sendable, Equatable {
+public struct VideoStreamConfiguration: Sendable, Equatable, Hashable {
     public let framesPerSecond: Int
     public let quality: Int
     public let scale: Double
@@ -19,9 +13,7 @@ public struct VideoStreamConfiguration: Sendable, Equatable {
     }
 }
 
-/// One frame from the application-facing stream API. Unlike the CLI
-/// `stream-video` command, frames are returned to the caller and never
-/// written to stdout.
+/// One JPEG frame from the application-facing stream API.
 public struct VideoFrame: Sendable, Equatable {
     public let jpegData: Data
     public let timestamp: Date
@@ -33,12 +25,12 @@ public struct VideoFrame: Sendable, Equatable {
 }
 
 public extension SimUseClient {
-    /// Streams JPEG frames from an iOS Simulator as an async sequence.
+    /// Streams JPEG frames from one iOS Simulator without starting the CLI or
+    /// using the sim-use daemon.
     ///
-    /// The stream is backed by FBSimulatorControl's BGRA video stream. JPEG
-    /// encoding happens in this API after receiving raw frames, because the
-    /// Simulator runtime does not support the FBVideoStream MJPEG codec on
-    /// every Xcode/runtime combination.
+    /// The capture is backed by a device-scoped IOSurface session. The session
+    /// is shared by callers using the same device and configuration, while
+    /// each caller receives an independently cancellable async stream.
     func streamVideo(
         on deviceID: SimulatorID,
         configuration: VideoStreamConfiguration = .init()
@@ -46,334 +38,139 @@ public extension SimUseClient {
         guard !deviceID.rawValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw SimUseError.invalidRequest("Device ID must not be empty.")
         }
+        try validate(configuration)
+
+        return try await SimulatorVideoStreamRegistry.shared.subscribe(
+            deviceID: deviceID,
+            configuration: configuration
+        )
+    }
+
+    private func validate(_ configuration: VideoStreamConfiguration) throws {
+        guard (1...30).contains(configuration.framesPerSecond) else {
+            throw SimUseError.invalidRequest("FPS must be between 1 and 30")
+        }
+        guard (1...100).contains(configuration.quality) else {
+            throw SimUseError.invalidRequest("Quality must be between 1 and 100")
+        }
+        guard configuration.scale >= 0.1, configuration.scale <= 1.0 else {
+            throw SimUseError.invalidRequest("Scale must be between 0.1 and 1.0")
+        }
+    }
+}
+
+private actor SimulatorVideoStreamRegistry {
+    static let shared = SimulatorVideoStreamRegistry()
+
+    private struct Key: Hashable {
+        let deviceID: SimulatorID
+        let configuration: VideoStreamConfiguration
+    }
+
+    private var sessions: [Key: SimulatorVideoStreamSession] = [:]
+
+    func subscribe(
+        deviceID: SimulatorID,
+        configuration: VideoStreamConfiguration
+    ) async throws -> AsyncThrowingStream<VideoFrame, Error> {
+        let key = Key(deviceID: deviceID, configuration: configuration)
+        let session: SimulatorVideoStreamSession
+        if let existing = sessions[key] {
+            session = existing
+        } else {
+            session = SimulatorVideoStreamSession(
+                deviceID: deviceID,
+                configuration: configuration,
+                onEmpty: { [weak self] in
+                    await self?.remove(key: key)
+                }
+            )
+            sessions[key] = session
+        }
+
         do {
-            try IOSSimStreamVideoCommand.validateOptions(
-                fps: configuration.framesPerSecond,
-                quality: configuration.quality,
-                scale: configuration.scale
-            )
-            let logger = SimUseLogger(silent: true)
-            try await performGlobalSetup(logger: logger)
-            let simulatorSet = try await getSimulatorSet(
-                deviceSetPath: nil,
-                logger: logger,
-                reporter: EmptyEventReporter.shared
-            )
-            guard let simulator = simulatorSet.allSimulators.first(where: { $0.udid == deviceID.rawValue }) else {
-                throw SimUseError.deviceNotFound("Simulator \(deviceID.rawValue) was not found.")
-            }
-            guard simulator.state == .booted else {
-                throw SimUseError.deviceNotBooted("Simulator \(deviceID.rawValue) is not booted.")
-            }
-
-            guard let screenInfo = simulator.screenInfo,
-                  screenInfo.widthPixels > 0,
-                  screenInfo.heightPixels > 0 else {
-                throw SimUseError.invalidRequest("Simulator screen size is unavailable.")
-            }
-            let pixelWidth = max(Int((Double(screenInfo.widthPixels) * configuration.scale).rounded()), 1)
-            let pixelHeight = max(Int((Double(screenInfo.heightPixels) * configuration.scale).rounded()), 1)
-            let streamConfiguration = FBVideoStreamConfiguration(
-                encoding: .BGRA,
-                framesPerSecond: NSNumber(value: configuration.framesPerSecond),
-                compressionQuality: NSNumber(value: Double(configuration.quality) / 100.0),
-                scaleFactor: NSNumber(value: configuration.scale),
-                avgBitrate: nil,
-                keyFrameRate: nil
-            )
-            let videoStream = try await awaitFutureValue(
-                simulator.createStream(with: streamConfiguration)
-            )
-            let bridge = BGRAVideoStreamBridge(
-                videoStream: videoStream,
-                deviceID: deviceID
-            )
-            bridge.configureFrameSize(width: pixelWidth, height: pixelHeight, quality: configuration.quality)
-            do {
-                try await bridge.start()
-            } catch {
-                bridge.finish(throwing: SimUseError.map(error, deviceID: deviceID.rawValue))
-                throw SimUseError.map(error, deviceID: deviceID.rawValue)
-            }
-
-            return bridge.frames
-        } catch let error as SimUseError {
-            throw error
+            return try await session.subscribe()
         } catch {
+            await remove(key: key)
             throw SimUseError.map(error, deviceID: deviceID.rawValue)
         }
     }
-}
 
-private func awaitFutureValue<T: AnyObject>(_ future: FBFuture<T>) async throws -> T {
-    try await withTaskCancellationHandler {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
-            future.onQueue(DispatchQueue.global(qos: .utility), notifyOfCompletion: { resolvedFuture in
-                if let error = resolvedFuture.error {
-                    continuation.resume(throwing: error)
-                } else if let result = resolvedFuture.result {
-                    continuation.resume(returning: result as! T)
-                } else {
-                    continuation.resume(throwing: VideoStreamError.futureResolvedWithoutResult)
-                }
-            })
-        }
-    } onCancel: {
-        future.cancel()
+    private func remove(key: Key) async {
+        guard let session = sessions.removeValue(forKey: key) else { return }
+        await session.stop()
     }
 }
 
-private func awaitFuture(_ future: FBFuture<NSNull>) async throws {
-    try await withTaskCancellationHandler {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            future.onQueue(DispatchQueue.global(qos: .utility), notifyOfCompletion: { resolvedFuture in
-                if let error = resolvedFuture.error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: ())
-                }
-            })
-        }
-    } onCancel: {
-        future.cancel()
-    }
-}
+private actor SimulatorVideoStreamSession {
+    private let capture: SimulatorIOSurfaceCapture
+    private let configuration: VideoStreamConfiguration
+    private let onEmpty: @Sendable () async -> Void
+    private var continuations: [UUID: AsyncThrowingStream<VideoFrame, Error>.Continuation] = [:]
+    private var latestFrame: VideoFrame?
+    private var isStarted = false
 
-private enum VideoStreamError: Error {
-    case futureResolvedWithoutResult
-    case invalidFrameSize
-}
-
-private final class BGRAVideoStreamBridge: @unchecked Sendable {
-    let frames: AsyncThrowingStream<VideoFrame, Error>
-
-    private let videoStream: any FBVideoStream
-    private let deviceID: SimulatorID
-    private let continuationBox: ContinuationBox
-    private let assembler = BGRAVideoFrameAssembler()
-    private let stateLock = NSLock()
-    private var consumer: (any FBDataConsumer)?
-    private var hasFinished = false
-    private var frameWidth = 0
-    private var frameHeight = 0
-    private var quality = 80
-
-    init(videoStream: any FBVideoStream, deviceID: SimulatorID) {
-        self.videoStream = videoStream
-        self.deviceID = deviceID
-
-        let continuationBox = ContinuationBox()
-        self.continuationBox = continuationBox
-        self.frames = AsyncThrowingStream { continuation in
-            continuationBox.set(continuation)
-        }
-        continuationBox.setTerminationHandler { [weak self] _ in
-            self?.stop()
-        }
-    }
-
-    func configureFrameSize(width: Int, height: Int, quality: Int) {
-        stateLock.lock()
-        frameWidth = width
-        frameHeight = height
-        self.quality = quality
-        stateLock.unlock()
-        assembler.configure(frameWidth: width, frameHeight: height)
-    }
-
-    func start() async throws {
-        let consumer = FBBlockDataConsumer.asynchronousDataConsumer { [weak self] data in
-            self?.receive(data)
-        }
-        store(consumer: consumer)
-
-        let startFuture = videoStream.startStreaming(consumer)
-        videoStream.completed.onQueue(DispatchQueue.global(qos: .utility), notifyOfCompletion: { [weak self] (future: FBFuture<AnyObject>) in
-            if let error = future.error {
-                self?.finish(throwing: SimUseError.map(error, deviceID: self?.deviceID.rawValue ?? ""))
-            } else {
-                self?.finish()
-            }
-        })
-
-        try await awaitFuture(startFuture)
-    }
-
-    private func receive(_ data: Data) {
-        let frames = assembler.append(data)
-        stateLock.lock()
-        let width = frameWidth
-        let height = frameHeight
-        let quality = self.quality
-        stateLock.unlock()
-        guard width > 0, height > 0 else { return }
-
-        for bgraData in frames {
-            guard let jpegData = Self.encodeJPEG(
-                fromBGRA: bgraData,
-                width: width,
-                height: height,
-                quality: quality
-            ) else {
-                finish(throwing: VideoStreamError.invalidFrameSize)
-                return
-            }
-            continuationBox.yield(VideoFrame(jpegData: jpegData))
-        }
-    }
-
-    private static func encodeJPEG(fromBGRA data: Data, width: Int, height: Int, quality: Int) -> Data? {
-        let bytesPerRow = width * 4
-        guard data.count == bytesPerRow * height,
-              let provider = CGDataProvider(data: data as CFData),
-              let image = CGImage(
-                  width: width,
-                  height: height,
-                  bitsPerComponent: 8,
-                  bitsPerPixel: 32,
-                  bytesPerRow: bytesPerRow,
-                  space: CGColorSpaceCreateDeviceRGB(),
-                  bitmapInfo: CGBitmapInfo(
-                      rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue |
-                          CGBitmapInfo.byteOrder32Little.rawValue
-                  ),
-                  provider: provider,
-                  decode: nil,
-                  shouldInterpolate: false,
-                  intent: .defaultIntent
-              ) else {
-            return nil
-        }
-
-        let output = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            output,
-            "public.jpeg" as CFString,
-            1,
-            nil
-        ) else {
-            return nil
-        }
-        CGImageDestinationAddImage(destination, image, [
-            kCGImageDestinationLossyCompressionQuality: Double(quality) / 100.0
-        ] as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-        return output as Data
-    }
-
-    private func store(consumer: any FBDataConsumer) {
-        stateLock.lock()
-        self.consumer = consumer
-        stateLock.unlock()
-    }
-
-    func stop() {
-        stateLock.lock()
-        guard hasFinished == false else {
-            stateLock.unlock()
-            return
-        }
-        hasFinished = true
-        stateLock.unlock()
-
-        Task {
-            _ = try? await awaitFuture(videoStream.stopStreaming())
-            continuationBox.finish()
-            clearConsumer()
-        }
-    }
-
-    func finish(throwing error: Error? = nil) {
-        stateLock.lock()
-        guard hasFinished == false else {
-            stateLock.unlock()
-            return
-        }
-        hasFinished = true
-        stateLock.unlock()
-
-        if let error {
-            continuationBox.finish(throwing: error)
-        } else {
-            continuationBox.finish()
-        }
-        Task {
-            _ = try? await awaitFuture(videoStream.stopStreaming())
-            clearConsumer()
-        }
-    }
-
-    private func clearConsumer() {
-        stateLock.lock()
-        consumer = nil
-        stateLock.unlock()
-    }
-}
-
-private final class ContinuationBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: AsyncThrowingStream<VideoFrame, Error>.Continuation?
-
-    func set(_ continuation: AsyncThrowingStream<VideoFrame, Error>.Continuation) {
-        lock.lock()
-        self.continuation = continuation
-        lock.unlock()
-    }
-
-    func setTerminationHandler(
-        _ handler: @escaping @Sendable (AsyncThrowingStream<VideoFrame, Error>.Continuation.Termination) -> Void
+    init(
+        deviceID: SimulatorID,
+        configuration: VideoStreamConfiguration,
+        onEmpty: @escaping @Sendable () async -> Void
     ) {
-        lock.lock()
-        continuation?.onTermination = handler
-        lock.unlock()
+        self.capture = SimulatorIOSurfaceCapture(deviceID: deviceID)
+        self.configuration = configuration
+        self.onEmpty = onEmpty
     }
 
-    func yield(_ frame: VideoFrame) {
-        lock.lock()
-        continuation?.yield(frame)
-        lock.unlock()
-    }
-
-    func finish(throwing error: Error? = nil) {
-        lock.lock()
-        if let error {
-            continuation?.finish(throwing: error)
-        } else {
-            continuation?.finish()
+    func subscribe() async throws -> AsyncThrowingStream<VideoFrame, Error> {
+        let subscriberID = UUID()
+        let (stream, continuation) = AsyncThrowingStream<VideoFrame, Error>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        continuation.onTermination = { [weak self] _ in
+            Task { await self?.remove(subscriberID) }
         }
-        lock.unlock()
-    }
-}
+        continuations[subscriberID] = continuation
 
-private final class BGRAVideoFrameAssembler: @unchecked Sendable {
-    private let lock = NSLock()
-    private var buffer = Data()
-    private var frameByteCount = 0
-
-    func configure(frameWidth: Int, frameHeight: Int) {
-        lock.lock()
-        frameByteCount = frameWidth * frameHeight * 4
-        buffer.removeAll(keepingCapacity: true)
-        lock.unlock()
-    }
-
-    func append(_ data: Data) -> [Data] {
-        lock.lock()
-        defer { lock.unlock() }
-
-        buffer.append(data)
-        var frames: [Data] = []
-
-        guard frameByteCount > 0 else { return frames }
-        while buffer.count >= frameByteCount {
-            frames.append(buffer.subdata(in: 0..<frameByteCount))
-            buffer.removeSubrange(0..<frameByteCount)
+        if let latestFrame {
+            continuation.yield(latestFrame)
         }
 
-        if buffer.count > frameByteCount * 2 {
-            buffer.removeAll(keepingCapacity: true)
+        do {
+            if isStarted == false {
+                try await capture.start(configuration: configuration) { [weak self] frame in
+                    Task { await self?.publish(frame) }
+                }
+                isStarted = true
+            }
+            return stream
+        } catch {
+            continuations.removeValue(forKey: subscriberID)
+            continuation.finish(throwing: error)
+            await onEmpty()
+            throw error
         }
+    }
 
-        return frames
+    private func publish(_ frame: VideoFrame) {
+        latestFrame = frame
+        for continuation in continuations.values {
+            continuation.yield(frame)
+        }
+    }
+
+    private func remove(_ subscriberID: UUID) async {
+        continuations.removeValue(forKey: subscriberID)
+        guard continuations.isEmpty else { return }
+        await stop()
+        await onEmpty()
+    }
+
+    func stop() async {
+        guard isStarted else { return }
+        isStarted = false
+        await capture.stop()
+        for continuation in continuations.values {
+            continuation.finish()
+        }
+        continuations.removeAll()
     }
 }

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 import Testing
 import Foundation
-import SimUseKit
+import CoreVideo
+@testable import SimUseKit
 
 @Suite("SimUseKit public API")
 struct SimUseKitTests {
@@ -55,6 +56,31 @@ struct SimUseKitTests {
 
         let screenshot = ScreenshotResult(data: Data([0x89, 0x50, 0x4E, 0x47]))
         #expect(screenshot.data.count == 4)
+    }
+
+    @Test("IOSurface-compatible BGRA buffers are encoded as JPEG")
+    func jpegEncoder() {
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            4,
+            4,
+            kCVPixelFormatType_32BGRA,
+            [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary,
+            &pixelBuffer
+        )
+        #expect(status == kCVReturnSuccess)
+        guard let pixelBuffer else { return }
+
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        if let address = CVPixelBufferGetBaseAddress(pixelBuffer) {
+            memset(address, 0x80, CVPixelBufferGetBytesPerRow(pixelBuffer) * 4)
+        }
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+
+        let data = SimulatorVideoJPEGEncoder.encode(pixelBuffer: pixelBuffer, scale: 1, quality: 80)
+        #expect(data?.first == 0xFF)
+        #expect(data?.dropFirst().first == 0xD8)
     }
 
     @Test("text input is represented by an application-facing request")
