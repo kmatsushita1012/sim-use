@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 import Dispatch
+import CoreGraphics
 import FBSimulatorControl
 @preconcurrency import FBControlCore
+import ImageIO
 import iOSSimBackend
 
 public struct VideoStreamConfiguration: Sendable, Equatable {
@@ -33,10 +35,10 @@ public struct VideoFrame: Sendable, Equatable {
 public extension SimUseClient {
     /// Streams JPEG frames from an iOS Simulator as an async sequence.
     ///
-    /// The stream is backed by FBSimulatorControl's MJPEG video stream. It
-    /// does not search for a Simulator window and does not invoke a CLI
-    /// process, so it remains independent from the current desktop and
-    /// display lock state.
+    /// The stream is backed by FBSimulatorControl's BGRA video stream. JPEG
+    /// encoding happens in this API after receiving raw frames, because the
+    /// Simulator runtime does not support the FBVideoStream MJPEG codec on
+    /// every Xcode/runtime combination.
     func streamVideo(
         on deviceID: SimulatorID,
         configuration: VideoStreamConfiguration = .init()
@@ -64,8 +66,15 @@ public extension SimUseClient {
                 throw SimUseError.deviceNotBooted("Simulator \(deviceID.rawValue) is not booted.")
             }
 
+            guard let screenInfo = simulator.screenInfo,
+                  screenInfo.widthPixels > 0,
+                  screenInfo.heightPixels > 0 else {
+                throw SimUseError.invalidRequest("Simulator screen size is unavailable.")
+            }
+            let pixelWidth = max(Int((Double(screenInfo.widthPixels) * configuration.scale).rounded()), 1)
+            let pixelHeight = max(Int((Double(screenInfo.heightPixels) * configuration.scale).rounded()), 1)
             let streamConfiguration = FBVideoStreamConfiguration(
-                encoding: .MJPEG,
+                encoding: .BGRA,
                 framesPerSecond: NSNumber(value: configuration.framesPerSecond),
                 compressionQuality: NSNumber(value: Double(configuration.quality) / 100.0),
                 scaleFactor: NSNumber(value: configuration.scale),
@@ -75,10 +84,11 @@ public extension SimUseClient {
             let videoStream = try await awaitFutureValue(
                 simulator.createStream(with: streamConfiguration)
             )
-            let bridge = MJPEGVideoStreamBridge(
+            let bridge = BGRAVideoStreamBridge(
                 videoStream: videoStream,
                 deviceID: deviceID
             )
+            bridge.configureFrameSize(width: pixelWidth, height: pixelHeight, quality: configuration.quality)
             do {
                 try await bridge.start()
             } catch {
@@ -104,7 +114,7 @@ private func awaitFutureValue<T: AnyObject>(_ future: FBFuture<T>) async throws 
                 } else if let result = resolvedFuture.result {
                     continuation.resume(returning: result as! T)
                 } else {
-                    continuation.resume(throwing: MJPEGStreamError.futureResolvedWithoutResult)
+                    continuation.resume(throwing: VideoStreamError.futureResolvedWithoutResult)
                 }
             })
         }
@@ -129,20 +139,24 @@ private func awaitFuture(_ future: FBFuture<NSNull>) async throws {
     }
 }
 
-private enum MJPEGStreamError: Error {
+private enum VideoStreamError: Error {
     case futureResolvedWithoutResult
+    case invalidFrameSize
 }
 
-private final class MJPEGVideoStreamBridge: @unchecked Sendable {
+private final class BGRAVideoStreamBridge: @unchecked Sendable {
     let frames: AsyncThrowingStream<VideoFrame, Error>
 
     private let videoStream: any FBVideoStream
     private let deviceID: SimulatorID
     private let continuationBox: ContinuationBox
-    private let assembler = MJPEGFrameAssembler()
+    private let assembler = BGRAVideoFrameAssembler()
     private let stateLock = NSLock()
     private var consumer: (any FBDataConsumer)?
     private var hasFinished = false
+    private var frameWidth = 0
+    private var frameHeight = 0
+    private var quality = 80
 
     init(videoStream: any FBVideoStream, deviceID: SimulatorID) {
         self.videoStream = videoStream
@@ -156,6 +170,15 @@ private final class MJPEGVideoStreamBridge: @unchecked Sendable {
         continuationBox.setTerminationHandler { [weak self] _ in
             self?.stop()
         }
+    }
+
+    func configureFrameSize(width: Int, height: Int, quality: Int) {
+        stateLock.lock()
+        frameWidth = width
+        frameHeight = height
+        self.quality = quality
+        stateLock.unlock()
+        assembler.configure(frameWidth: width, frameHeight: height)
     }
 
     func start() async throws {
@@ -177,10 +200,65 @@ private final class MJPEGVideoStreamBridge: @unchecked Sendable {
     }
 
     private func receive(_ data: Data) {
-        let extractedFrames = assembler.append(data)
-        for jpegData in extractedFrames {
+        let frames = assembler.append(data)
+        stateLock.lock()
+        let width = frameWidth
+        let height = frameHeight
+        let quality = self.quality
+        stateLock.unlock()
+        guard width > 0, height > 0 else { return }
+
+        for bgraData in frames {
+            guard let jpegData = Self.encodeJPEG(
+                fromBGRA: bgraData,
+                width: width,
+                height: height,
+                quality: quality
+            ) else {
+                finish(throwing: VideoStreamError.invalidFrameSize)
+                return
+            }
             continuationBox.yield(VideoFrame(jpegData: jpegData))
         }
+    }
+
+    private static func encodeJPEG(fromBGRA data: Data, width: Int, height: Int, quality: Int) -> Data? {
+        let bytesPerRow = width * 4
+        guard data.count == bytesPerRow * height,
+              let provider = CGDataProvider(data: data as CFData),
+              let image = CGImage(
+                  width: width,
+                  height: height,
+                  bitsPerComponent: 8,
+                  bitsPerPixel: 32,
+                  bytesPerRow: bytesPerRow,
+                  space: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGBitmapInfo(
+                      rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue |
+                          CGBitmapInfo.byteOrder32Little.rawValue
+                  ),
+                  provider: provider,
+                  decode: nil,
+                  shouldInterpolate: false,
+                  intent: .defaultIntent
+              ) else {
+            return nil
+        }
+
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            output,
+            "public.jpeg" as CFString,
+            1,
+            nil
+        ) else {
+            return nil
+        }
+        CGImageDestinationAddImage(destination, image, [
+            kCGImageDestinationLossyCompressionQuality: Double(quality) / 100.0
+        ] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return output as Data
     }
 
     private func store(consumer: any FBDataConsumer) {
@@ -267,11 +345,17 @@ private final class ContinuationBox: @unchecked Sendable {
     }
 }
 
-private final class MJPEGFrameAssembler: @unchecked Sendable {
+private final class BGRAVideoFrameAssembler: @unchecked Sendable {
     private let lock = NSLock()
     private var buffer = Data()
-    private let startMarker = Data([0xFF, 0xD8])
-    private let endMarker = Data([0xFF, 0xD9])
+    private var frameByteCount = 0
+
+    func configure(frameWidth: Int, frameHeight: Int) {
+        lock.lock()
+        frameByteCount = frameWidth * frameHeight * 4
+        buffer.removeAll(keepingCapacity: true)
+        lock.unlock()
+    }
 
     func append(_ data: Data) -> [Data] {
         lock.lock()
@@ -280,29 +364,14 @@ private final class MJPEGFrameAssembler: @unchecked Sendable {
         buffer.append(data)
         var frames: [Data] = []
 
-        while let start = buffer.range(of: startMarker) {
-            guard let end = buffer.range(
-                of: endMarker,
-                options: [],
-                in: start.upperBound..<buffer.endIndex
-            ) else {
-                if start.lowerBound > 0 {
-                    buffer.removeSubrange(0..<start.lowerBound)
-                }
-                break
-            }
-
-            let frameEnd = end.upperBound
-            frames.append(buffer.subdata(in: start.lowerBound..<frameEnd))
-            buffer.removeSubrange(0..<frameEnd)
+        guard frameByteCount > 0 else { return frames }
+        while buffer.count >= frameByteCount {
+            frames.append(buffer.subdata(in: 0..<frameByteCount))
+            buffer.removeSubrange(0..<frameByteCount)
         }
 
-        if buffer.count > 4 * 1024 * 1024 {
-            if let start = buffer.range(of: startMarker) {
-                buffer.removeSubrange(0..<start.lowerBound)
-            } else {
-                buffer.removeAll(keepingCapacity: true)
-            }
+        if buffer.count > frameByteCount * 2 {
+            buffer.removeAll(keepingCapacity: true)
         }
 
         return frames
