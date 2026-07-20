@@ -176,19 +176,23 @@ let package = Package(
         ),
         .binaryTarget(
             name: "FBControlCore",
-            path: "build_products/XCFrameworks/FBControlCore.xcframework"
+            url: "https://github.com/kmatsushita1012/sim-use/releases/download/v0.10.1/FBControlCore.xcframework.zip",
+            checksum: "93a08dd119a08bee326a00cb57860df6aa3e2989fb621f84d825576390f175c2"
         ),
         .binaryTarget(
             name: "FBDeviceControl",
-            path: "build_products/XCFrameworks/FBDeviceControl.xcframework"
+            url: "https://github.com/kmatsushita1012/sim-use/releases/download/v0.10.1/FBDeviceControl.xcframework.zip",
+            checksum: "9bafac5314ccf38bcb780bc60e2c1d218149249c552bb263750bb0870174a0fa"
         ),
         .binaryTarget(
             name: "FBSimulatorControl",
-            path: "build_products/XCFrameworks/FBSimulatorControl.xcframework"
+            url: "https://github.com/kmatsushita1012/sim-use/releases/download/v0.10.1/FBSimulatorControl.xcframework.zip",
+            checksum: "e59dc11f3f0d602b682f83e262abb5fcf765bfb74bbe9c4d0b1c538a14e9fc6b"
         ),
         .binaryTarget(
             name: "XCTestBootstrap",
-            path: "build_products/XCFrameworks/XCTestBootstrap.xcframework"
+            url: "https://github.com/kmatsushita1012/sim-use/releases/download/v0.10.1/XCTestBootstrap.xcframework.zip",
+            checksum: "6fd66c9c38dc52ab65d40e84a741d34c1c020fb77829ef0a711bcfc0e03871d8"
         ),
     ]
 )
