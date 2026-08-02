@@ -12,7 +12,7 @@
 | iOS | `touch` | `IOSSimTouchCommand` | yes | typed request + session events | empty result |
 | iOS | `type` | `IOSSimTypeCommand` | yes* | typed request | typed completion result |
 | iOS | `paste` | `IOSSimPasteCommand` | yes* | typed request | typed completion result |
-| iOS | `button` | `IOSSimButtonCommand` | yes | typed request | typed completion result |
+| iOS | `button` (`shake`、`apple-pay`、`side-button`、`siri` を含む) | `IOSSimButtonCommand` | yes | typed request / named `HIDEvent` button events | typed completion result |
 | iOS | `gesture` | `IOSSimGestureCommand` | yes | typed request | typed completion result |
 | iOS | `multi-touch` | `IOSSimMultiTouchCommand` | yes | typed request | empty result |
 | iOS | `keyboard-state` | `IOSSimKeyboardStateCommand` | yes | typed request | keyboard state |

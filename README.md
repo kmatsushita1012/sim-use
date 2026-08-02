@@ -235,8 +235,16 @@ sim-use keyboard-state --json --device $UDID
 sim-use button home --device $UDID
 sim-use button lock --duration 2.0 --device $UDID     # long press
 sim-use button siri --device $UDID
-# Also: side-button, apple-pay
+# Also: side-button, apple-pay, shake
 ```
+
+`button shake` is iOS/iPadOS Simulator-only. It posts the Simulator-native
+Shake operation to the selected device, so it does not synthesize a touch or
+keyboard event and can be invoked repeatedly without leaving input state
+behind. It requires an iOS-family runtime that exposes the native
+`SimulatorShake` notification and the Xcode/SimulatorKit HID stack supported
+by sim-use (Xcode 26.x at present); Android, watchOS, and tvOS targets reject
+it.
 
 ### Low-level keyboard (iOS-only)
 
@@ -407,6 +415,7 @@ func exerciseSimulator(_ id: String) async throws {
 
     let session = try await client.openSession(for: device)
     try await session.send([
+        .shake,
         .touchDown(x: 100, y: 300),
         .touchMove(x: 140, y: 300),
         .touchMove(x: 180, y: 300),
@@ -471,6 +480,18 @@ The benchmark reports session setup, each event interval, the total for
 and a comparable `swipe` total. `HIDEvent.touchMove` is also available for
 readability; on the fixed idb revision it is dispatched as another
 `touchDownAt` on the same connection.
+
+`HIDEvent.shake` uses the same selected Simulator session and follows the
+native Simulator.app Shake path. It is available only for iOS/iPadOS runtime
+families that support the `SimulatorShake` notification; unsupported runtimes
+throw instead of falling back to touch or keyboard input.
+
+Named iOS hardware-button events are also exposed by `SimUseKit` as
+`HIDEvent.applePay`, `HIDEvent.sideButton`, and `HIDEvent.siri`. These APIs are
+currently deprecated because the corresponding simulator HID inputs are not
+available in this release; support is planned for a future release. For a
+held press, use the existing `buttonDown`/`delay`/`buttonUp` sequence once the
+underlying simulator HID support is available.
 
 
 ## Viewer

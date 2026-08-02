@@ -145,6 +145,8 @@ public actor SimUseClient {
                 guard seconds.isFinite, seconds >= 0 else {
                     throw SimUseError.invalidRequest("HID delay must be a finite non-negative value.")
                 }
+            case .shake, .applePay, .sideButton, .siri:
+                break
             }
         }
     }
@@ -225,11 +227,15 @@ private actor SimulatorWorker {
             var timings: [HIDEventTiming] = []
             timings.reserveCapacity(events.count)
             for (index, event) in events.enumerated() {
-                session = try await HIDInteractor.performHIDEventReturningSession(
-                    event.makeBackendEvent(),
-                    in: session,
-                    logger: logger
-                )
+                if let backendEvent = event.makeBackendEvent() {
+                    session = try await HIDInteractor.performHIDEventReturningSession(
+                        backendEvent,
+                        in: session,
+                        logger: logger
+                    )
+                } else {
+                    try SimulatorShake.perform(in: session)
+                }
                 hidSession = session
                 let now = Date.timeIntervalSinceReferenceDate
                 timings.append(HIDEventTiming(index: index, event: event, interval: now - previous, elapsed: now - start))
@@ -268,6 +274,8 @@ private actor SimulatorWorker {
                 guard (1...5).contains(button) else { throw SimUseError.invalidRequest("HID button must be between 1 and 5.") }
             case let .delay(seconds):
                 guard seconds.isFinite, seconds >= 0 else { throw SimUseError.invalidRequest("HID delay must be a finite non-negative value.") }
+            case .shake, .applePay, .sideButton, .siri:
+                break
             }
         }
     }
@@ -300,6 +308,21 @@ public protocol SimUseRequest {
 /// Application-facing HID events. The underlying idb event type stays inside
 /// the adapter target.
 public enum HIDEvent: Sendable {
+    /// Sends the Simulator.app-native Device > Shake operation.
+    ///
+    /// This is available only for iOS/iPadOS Simulator runtimes that expose
+    /// the native SimulatorShake notification. It is not a touch or keyboard
+    /// substitute and does not leave an input contact active.
+    case shake
+    /// Sends a short Apple Pay button press to the selected iOS Simulator.
+    @available(*, deprecated, message: "Apple Pay simulator input is unavailable in this release; support is planned for a future release.")
+    case applePay
+    /// Sends a short side-button press to the selected iOS Simulator.
+    @available(*, deprecated, message: "Side Button simulator input is unavailable in this release; support is planned for a future release.")
+    case sideButton
+    /// Sends a short Siri button press to the selected iOS Simulator.
+    @available(*, deprecated, message: "Siri simulator input is unavailable in this release; support is planned for a future release.")
+    case siri
     case touchDown(x: Double, y: Double)
     /// idb's fixed revision represents a move in a continuous touch path
     /// with another `touchDownAt` event on the same HID connection.
@@ -313,8 +336,16 @@ public enum HIDEvent: Sendable {
     case buttonUp(UInt32)
     case delay(TimeInterval)
 
-    fileprivate func makeBackendEvent() -> FBSimulatorHIDEvent {
+    fileprivate func makeBackendEvent() -> FBSimulatorHIDEvent? {
         switch self {
+        case .shake:
+            return nil
+        case .applePay:
+            return FBSimulatorHIDEvent.shortButtonPress(FBSimulatorHIDButton(rawValue: 1)!)
+        case .sideButton:
+            return FBSimulatorHIDEvent.shortButtonPress(FBSimulatorHIDButton(rawValue: 4)!)
+        case .siri:
+            return FBSimulatorHIDEvent.shortButtonPress(FBSimulatorHIDButton(rawValue: 5)!)
         case let .touchDown(x, y):
             return FBSimulatorHIDEvent.touchDownAt(x: x, y: y)
         case let .touchMove(x, y):
