@@ -78,6 +78,10 @@ struct SimUseMacOSClient {
 
     private static func eventName(_ event: HIDEvent) -> String {
         switch event {
+        case .shake: return "shake"
+        case .applePay: return "applePay"
+        case .sideButton: return "sideButton"
+        case .siri: return "siri"
         case .touchDown: return "touchDown"
         case .touchMove: return "touchMove(touchDownAt)"
         case .touchUp: return "touchUp"

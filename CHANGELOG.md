@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added native iOS/iPadOS Simulator Shake support through `button shake` and
+  the application-facing `HIDEvent.shake` API. The operation targets the
+  selected Simulator via its native `SimulatorShake` notification and rejects
+  unsupported runtime families instead of synthesizing touch or keyboard input.
+- Added named `SimUseKit` HID events for short Apple Pay, side-button, and Siri
+  presses: `HIDEvent.applePay`, `HIDEvent.sideButton`, and `HIDEvent.siri`.
 - Added the application-facing `TextRequest` API for direct text input
   without constructing the CLI `IOSSimTypeCommand` / ArgumentParser type.
 - Added the `SimUseKit` macOS library product. It exposes typed direct Swift

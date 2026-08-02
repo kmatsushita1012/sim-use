@@ -39,6 +39,18 @@ struct ButtonForwarderTests {
         }
     }
 
+    @Test("Shake rejects a duration because it is a one-shot native operation")
+    func shakeDurationRejected() {
+        do {
+            try IOSSimButtonCommand.validateOptions(buttonType: .shake, duration: 2)
+            Issue.record("expected ValidationError")
+        } catch let error as ValidationError {
+            #expect(error.message.contains("Shake does not support --duration"))
+        } catch {
+            Issue.record("unexpected error type \(type(of: error))")
+        }
+    }
+
     // MARK: - Symmetric forwarder contract
 
     @Test("AndroidButtonCommand.performPress is callable with the forwarder's argument shape")

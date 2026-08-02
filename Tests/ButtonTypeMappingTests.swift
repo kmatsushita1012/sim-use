@@ -13,6 +13,11 @@ struct ButtonTypeMappingTests {
             #expect(type.iosHidButton != nil, "\(type.rawValue) must map to an iOS HID button")
             #expect(type.androidKeyCode == nil, "\(type.rawValue) must NOT map to an Android keycode")
         }
+        #expect(ButtonType.applePay.iosHidButton?.rawValue == 1)
+        #expect(ButtonType.sideButton.iosHidButton?.rawValue == 4)
+        #expect(ButtonType.siri.iosHidButton?.rawValue == 5)
+        #expect(ButtonType.shake.iosHidButton == nil)
+        #expect(ButtonType.shake.androidKeyCode == nil)
     }
 
     @Test("Android-only buttons have an androidKeyCode but no iosHidButton")
@@ -36,7 +41,7 @@ struct ButtonTypeMappingTests {
     @Test("Every case maps to at least one platform")
     func everyCaseSupportedSomewhere() {
         for type in ButtonType.allCases {
-            #expect(type.iosHidButton != nil || type.androidKeyCode != nil,
+            #expect(type.iosHidButton != nil || type.androidKeyCode != nil || type.isIOSNativeAction,
                     "\(type.rawValue) is mapped on neither platform")
         }
     }
@@ -45,7 +50,7 @@ struct ButtonTypeMappingTests {
     func supportedLists() {
         let iosList = ButtonType.supportedOnIOSList
         let androidList = ButtonType.supportedOnAndroidList
-        for token in ["home", "lock", "apple-pay", "side-button", "siri"] {
+        for token in ["home", "lock", "apple-pay", "side-button", "siri", "shake"] {
             #expect(iosList.contains(token), "iOS list missing \(token)")
         }
         for token in ["home", "back", "lock", "recents"] {

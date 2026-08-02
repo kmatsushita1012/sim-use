@@ -21,6 +21,7 @@ import SimUseCore
 ///   `apple-pay`       | ApplePay (1)    | —
 ///   `side-button`     | SideButton (4)  | —
 ///   `siri`            | Siri (5)        | —
+///   `shake`           | Simulator-native| —
 public enum ButtonType: String, CaseIterable, ExpressibleByArgument {
     case home
     case lock
@@ -29,6 +30,7 @@ public enum ButtonType: String, CaseIterable, ExpressibleByArgument {
     case applePay = "apple-pay"
     case sideButton = "side-button"
     case siri
+    case shake
 
     public var iosHidButton: FBSimulatorHIDButton? {
         switch self {
@@ -37,7 +39,7 @@ public enum ButtonType: String, CaseIterable, ExpressibleByArgument {
         case .applePay:   return FBSimulatorHIDButton(rawValue: 1)
         case .sideButton: return FBSimulatorHIDButton(rawValue: 4)
         case .siri:       return FBSimulatorHIDButton(rawValue: 5)
-        case .back, .recents: return nil
+        case .back, .recents, .shake: return nil
         }
     }
 
@@ -47,8 +49,14 @@ public enum ButtonType: String, CaseIterable, ExpressibleByArgument {
         case .back:    return 4
         case .lock:    return 26
         case .recents: return 187
-        case .applePay, .sideButton, .siri: return nil
+        case .applePay, .sideButton, .siri, .shake: return nil
         }
+    }
+
+    /// Whether the action is available through an iOS-native path rather
+    /// than an `FBSimulatorHIDButton` value.
+    public var isIOSNativeAction: Bool {
+        self == .shake
     }
 
     public var description: String {
@@ -58,13 +66,16 @@ public enum ButtonType: String, CaseIterable, ExpressibleByArgument {
         case .lock:       return "Lock/Power button"
         case .sideButton: return "Side button"
         case .siri:       return "Siri button"
+        case .shake:      return "Shake gesture"
         case .back:       return "Back button"
         case .recents:    return "Recents button"
         }
     }
 
     public static var supportedOnIOSList: String {
-        Self.allCases.filter { $0.iosHidButton != nil }.map(\.rawValue).joined(separator: ", ")
+        Self.allCases.filter { $0.iosHidButton != nil || $0.isIOSNativeAction }
+            .map(\.rawValue)
+            .joined(separator: ", ")
     }
 
     public static var supportedOnAndroidList: String {
@@ -85,7 +96,7 @@ public struct IOSSimButtonCommand: SimUseExecutableCommand {
         commandName: "button",
         abstract: "Press a hardware button on the iOS simulator.",
         discussion: """
-        Supported on iOS: home, lock, apple-pay, side-button, siri
+        Supported on iOS: home, lock, apple-pay, side-button, siri, shake
 
         Examples:
           sim-use ios button home --udid SIMULATOR_UDID
@@ -134,7 +145,30 @@ public struct IOSSimButtonCommand: SimUseExecutableCommand {
         }
     }
 
+    public static func validateOptions(buttonType: ButtonType, duration: Double?) throws {
+        try validateOptions(duration: duration)
+        if buttonType == .shake, duration != nil {
+            throw ValidationError("Shake does not support --duration.")
+        }
+    }
+
     public func execute() async throws -> ExecutionResult {
+        try Self.validateOptions(buttonType: buttonType, duration: duration)
+
+        if buttonType == .shake {
+            let logger = SimUseLogger()
+            try await setup(logger: logger)
+            try await performGlobalSetup(logger: logger)
+
+            let session = try await HIDInteractor.makeSession(
+                for: device.resolved,
+                logger: logger
+            )
+            try SimulatorShake.perform(in: session)
+            logger.info().log("\(buttonType.description) completed successfully")
+            return ExecutionResult()
+        }
+
         guard let hidButton = buttonType.iosHidButton else {
             throw CLIError(errorDescription:
                 "`button \(buttonType.rawValue)` is not supported on iOS. Supported on iOS: \(ButtonType.supportedOnIOSList). For Android UDIDs (emulator-* / serial number) use one of: \(ButtonType.supportedOnAndroidList)."
