@@ -315,10 +315,13 @@ public enum HIDEvent: Sendable {
     /// substitute and does not leave an input contact active.
     case shake
     /// Sends a short Apple Pay button press to the selected iOS Simulator.
+    @available(*, deprecated, message: "Apple Pay simulator input is unavailable in this release; support is planned for a future release.")
     case applePay
     /// Sends a short side-button press to the selected iOS Simulator.
+    @available(*, deprecated, message: "Side Button simulator input is unavailable in this release; support is planned for a future release.")
     case sideButton
     /// Sends a short Siri button press to the selected iOS Simulator.
+    @available(*, deprecated, message: "Siri simulator input is unavailable in this release; support is planned for a future release.")
     case siri
     case touchDown(x: Double, y: Double)
     /// idb's fixed revision represents a move in a continuous touch path

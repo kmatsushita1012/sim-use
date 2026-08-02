@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Deprecated the `SimUseKit` named hardware-button events for Apple Pay, Side
+  Button, and Siri. Their simulator HID support is unavailable in this
+  release and is planned for a future release.
 - Removed `MainActor` isolation from the `SimUseKit` application API. Simulator
   state is now owned by a per-UDID worker actor with a serial executor, while
   UI state remains the macOS application's responsibility.

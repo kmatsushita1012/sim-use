@@ -486,10 +486,12 @@ native Simulator.app Shake path. It is available only for iOS/iPadOS runtime
 families that support the `SimulatorShake` notification; unsupported runtimes
 throw instead of falling back to touch or keyboard input.
 
-Named iOS hardware-button events are also available from `SimUseKit`:
-`HIDEvent.applePay`, `HIDEvent.sideButton`, and `HIDEvent.siri`. They dispatch
-the corresponding short HID button press on the selected Simulator. For a
-held press, use the existing `buttonDown`/`delay`/`buttonUp` sequence.
+Named iOS hardware-button events are also exposed by `SimUseKit` as
+`HIDEvent.applePay`, `HIDEvent.sideButton`, and `HIDEvent.siri`. These APIs are
+currently deprecated because the corresponding simulator HID inputs are not
+available in this release; support is planned for a future release. For a
+held press, use the existing `buttonDown`/`delay`/`buttonUp` sequence once the
+underlying simulator HID support is available.
 
 
 ## Viewer
