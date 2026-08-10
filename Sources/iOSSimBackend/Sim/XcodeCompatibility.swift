@@ -34,32 +34,20 @@ enum XcodeCompatibility {
         throw CLIError(errorDescription: message)
     }
 
-    /// The active `xcode-select` developer directory, preferring an explicit
-    /// `DEVELOPER_DIR` override. Returns nil if it cannot be determined.
+    /// The active developer directory, preferring an explicit
+    /// `DEVELOPER_DIR` override. Reads the same selection symlink used by
+    /// Apple's selector instead of spawning a selector CLI.
     private static func selectedDeveloperDir() -> String? {
         if let dir = ProcessInfo.processInfo.environment["DEVELOPER_DIR"], !dir.isEmpty {
             return dir
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
-        process.arguments = ["-p"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return nil
+        if let selected = try? FileManager.default
+            .destinationOfSymbolicLink(atPath: "/var/db/xcode_select_link"),
+           !selected.isEmpty
+        {
+            return selected
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0,
-              let output = String(data: data, encoding: .utf8)?
-                  .trimmingCharacters(in: .whitespacesAndNewlines),
-              !output.isEmpty
-        else {
-            return nil
-        }
-        return output
+        let fallback = "/Applications/Xcode.app/Contents/Developer"
+        return FileManager.default.fileExists(atPath: fallback) ? fallback : nil
     }
 }

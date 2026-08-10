@@ -99,6 +99,7 @@ let package = Package(
                 "SimUseCore",
                 "AndroidBackend",
                 "iOSSimBackend",
+                "SimUseKit",
                 "FBSimulatorControl",
                 "FBDeviceControl",
                 "FBControlCore",

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
+import Darwin
 import Foundation
+import ObjectiveC
 import SimUseCore
 
-/// Wraps `xcrun simctl list devices [booted] -j` and produces unified
-/// `Device` rows for the top-level `sim-use devices` verb.
+/// Produces unified `Device` rows from CoreSimulator's device set.
 ///
 /// Why a separate utility from `DeviceResolver`: the resolver only ever
 /// cares about *booted* sims (its job is "find the one I should talk
@@ -16,79 +17,87 @@ public enum SimctlDeviceLister {
 
         public var errorDescription: String? {
             switch self {
-            case .simctlFailed(let m): return "simctl failed: \(m)"
+            case .simctlFailed(let m): return "CoreSimulator bridge failed: \(m)"
             }
         }
     }
 
     public static func listDevices(bootedOnly: Bool) throws -> [Device] {
-        let data = try runSimctl(args: bootedOnly
-            ? ["simctl", "list", "devices", "booted", "-j"]
-            : ["simctl", "list", "devices", "-j"])
-        return try parse(data)
-    }
-
-    // MARK: - Internals
-
-    // `internal` + injectable `executablePath` so tests can drive the drain
-    // against `/bin/sh`; production uses the default `xcrun`.
-    static func runSimctl(executablePath: String = "/usr/bin/xcrun", args: [String]) throws -> Data {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = args
-
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        // Drain both pipes while the child runs. Once `simctl list devices -j`
-        // outgrows the ~64 KB pipe buffer the child blocks on `write(2)` and
-        // never exits, hanging `waitUntilExit()`. Same drain as `Adb.run`.
-        let bufferLock = NSLock()
-        var outBuffer = Data()
-        var errBuffer = Data()
-        stdout.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            guard !chunk.isEmpty else { return }
-            bufferLock.lock(); outBuffer.append(chunk); bufferLock.unlock()
+        loadCoreSimulator()
+        guard let contextClass = NSClassFromString("SimServiceContext") as? NSObject.Type else {
+            throw ListerError.simctlFailed(message: "CoreSimulator.framework is unavailable")
         }
-        stderr.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            guard !chunk.isEmpty else { return }
-            bufferLock.lock(); errBuffer.append(chunk); bufferLock.unlock()
+        let contextSelector = NSSelectorFromString("sharedServiceContextForDeveloperDir:error:")
+        guard let context = contextClass.perform(
+            contextSelector,
+            with: developerDirectory,
+            with: nil
+        )?.takeUnretainedValue() as? NSObject else {
+            throw ListerError.simctlFailed(message: "CoreSimulator service context is unavailable")
+        }
+        let deviceSetSelector = NSSelectorFromString("defaultDeviceSetWithError:")
+        guard let deviceSet = context.perform(deviceSetSelector, with: nil)?
+            .takeUnretainedValue() as? NSObject,
+              let rawDevices = deviceSet.value(forKey: "devices") as? [NSObject]
+        else {
+            throw ListerError.simctlFailed(message: "CoreSimulator device set is unavailable")
         }
 
-        do {
-            try process.run()
-        } catch {
-            throw ListerError.simctlFailed(message: "could not spawn xcrun simctl: \(error.localizedDescription)")
-        }
-        process.waitUntilExit()
-
-        // Detach handlers and collect anything left after exit.
-        stdout.fileHandleForReading.readabilityHandler = nil
-        stderr.fileHandleForReading.readabilityHandler = nil
-        bufferLock.lock()
-        outBuffer.append(stdout.fileHandleForReading.readDataToEndOfFile())
-        errBuffer.append(stderr.fileHandleForReading.readDataToEndOfFile())
-        bufferLock.unlock()
-
-        guard process.terminationStatus == 0 else {
-            let err = String(data: errBuffer, encoding: .utf8) ?? ""
-            throw ListerError.simctlFailed(
-                message: "xcrun simctl exited \(process.terminationStatus): \(err.trimmingCharacters(in: .whitespacesAndNewlines))"
+        let devices = rawDevices.compactMap { device -> Device? in
+            guard let udid = (device.value(forKey: "UDID") as? NSUUID)?.uuidString,
+                  let name = device.value(forKey: "name") as? String,
+                  let state = device.value(forKey: "stateString") as? String
+            else {
+                return nil
+            }
+            guard !bootedOnly || state == Device.State.iosBooted else { return nil }
+            let runtimeObject = device.value(forKey: "runtime") as? NSObject
+            let runtimeName = runtimeObject?.value(forKey: "name") as? String
+            let runtimeIdentifier = runtimeObject?.value(forKey: "identifier") as? String
+                ?? device.value(forKey: "runtimeIdentifier") as? String
+            return Device(
+                udid: udid,
+                name: name,
+                platform: .ios,
+                state: state,
+                runtime: runtimeName ?? runtimeIdentifier.map(friendlyRuntime)
             )
         }
-        return outBuffer
+        return devices.sorted { lhs, rhs in
+            if lhs.runtime != rhs.runtime { return (lhs.runtime ?? "") < (rhs.runtime ?? "") }
+            if lhs.name != rhs.name { return lhs.name < rhs.name }
+            return lhs.udid < rhs.udid
+        }
     }
 
-    /// Parses simctl's JSON:
+    private static var developerDirectory: String {
+        let environment = ProcessInfo.processInfo.environment
+        if let value = environment["DEVELOPER_DIR"], !value.isEmpty { return value }
+        if let selected = try? FileManager.default
+            .destinationOfSymbolicLink(atPath: "/var/db/xcode_select_link"),
+           !selected.isEmpty
+        {
+            return selected
+        }
+        return "/Applications/Xcode.app/Contents/Developer"
+    }
+
+    private static func loadCoreSimulator() {
+        let paths = [
+            "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/CoreSimulator",
+            "\(developerDirectory)/Library/PrivateFrameworks/CoreSimulator.framework/CoreSimulator",
+        ]
+        for path in paths {
+            _ = dlopen(path, RTLD_NOW | RTLD_LOCAL)
+        }
+    }
+
+    /// Parses the legacy device-list JSON shape:
     ///   { "devices": { "<runtimeId>": [ { "udid", "name", "state", ... }, ... ], ... } }
     ///
     /// Runtime IDs look like `com.apple.CoreSimulator.SimRuntime.iOS-18-6`.
     /// We convert them to the user-facing form `iOS 18.6` so the rendered
-    /// list matches what `xcrun simctl list devices` itself prints.
+    /// list matches the historical CLI rendering.
     public static func parse(_ data: Data) throws -> [Device] {
         struct RawDevice: Decodable {
             public let udid: String

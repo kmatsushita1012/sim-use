@@ -79,6 +79,7 @@ extension SimUseExecutableCommand {
 
         if jsonOutput {
             do {
+                await DeviceResolver.prepareAutomaticResolution(arguments: CommandLine.arguments)
                 try resolveDeferredArguments()
                 await clientPreflight()
                 let resolved = try await resolveExecutionResult()
@@ -93,6 +94,7 @@ extension SimUseExecutableCommand {
             }
         } else {
             do {
+                await DeviceResolver.prepareAutomaticResolution(arguments: CommandLine.arguments)
                 try resolveDeferredArguments()
                 await clientPreflight()
                 let resolved = try await resolveExecutionResult()
@@ -217,6 +219,14 @@ extension SimUseExecutableCommand {
         if ProcessInfo.processInfo.environment["SIM_USE_NO_DAEMON"] == "1" { return false }
         // Inside the daemon we must never recursively re-dispatch.
         if ProcessInfo.processInfo.environment["SIM_USE_IN_DAEMON"] == "1" { return false }
+        // iOS commands stay in the current Swift process. Their application
+        // API and backend already share the direct CoreSimulator bridge, so
+        // launching `sim-use daemon` would reintroduce a CLI hop. Keep the
+        // existing daemon optimization for Android, which is outside the
+        // iOS bridge migration.
+        if let udid = simulatorUDIDForDaemon, PlatformRouter.looksLikeIOSSim(udid) {
+            return false
+        }
         return true
     }
 

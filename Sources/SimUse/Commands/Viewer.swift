@@ -53,13 +53,7 @@ struct Viewer: AsyncParsableCommand {
                 """)
         }
 
-        let executable: URL
-        do {
-            executable = try ViewerAPIHandlers.resolveSelfExecutable()
-        } catch {
-            throw ValidationError("Could not locate sim-use binary path: \(error)")
-        }
-        let api = ViewerAPIHandlers(executable: executable)
+        let api = ViewerAPIHandlers()
 
         let server = try HTTPServer(port: port)
         server.get("/api/devices") { req in await api.devices(req) }

@@ -20,10 +20,10 @@ struct Paste: SimUseExecutableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Paste text into the focused field via the simulator pasteboard (bypasses IME).",
         discussion: """
-        Writes the text to the simulator pasteboard with `simctl pbcopy` and
-        triggers Cmd+V. Characters reach the responder chain without going
-        through the keyboard, so IME composition (e.g. Japanese kana) cannot
-        munge ASCII input and arbitrary Unicode is safe.
+        Writes the text through the in-process Swift Simulator pasteboard
+        bridge and triggers Cmd+V. Characters reach the responder chain
+        without going through the keyboard, so IME composition (e.g. Japanese
+        kana) cannot munge ASCII input and arbitrary Unicode is safe.
 
         Two input delivery paths:
 

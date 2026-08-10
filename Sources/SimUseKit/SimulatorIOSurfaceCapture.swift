@@ -366,20 +366,13 @@ enum SimulatorVideoFrameworkLoader {
            value.isEmpty == false {
             return value
         }
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
-        process.arguments = ["-p"]
-        process.standardOutput = output
-        guard (try? process.run()) != nil else {
-            return "/Applications/Xcode.app/Contents/Developer"
+        if let selected = try? FileManager.default
+            .destinationOfSymbolicLink(atPath: "/var/db/xcode_select_link"),
+           !selected.isEmpty
+        {
+            return selected
         }
-        process.waitUntilExit()
-        let path = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return path?.isEmpty == false
-            ? path!
-            : "/Applications/Xcode.app/Contents/Developer"
+        return "/Applications/Xcode.app/Contents/Developer"
     }
 
     static func load() throws {

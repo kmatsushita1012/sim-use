@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an application-facing asynchronous JPEG frame stream for iOS video.
 - Added per-event HID timing through `sendTimed` and a sample benchmark for
   same-session continuous touch-down scrolling versus `swipe`.
+- Added the iOS-only `PasteRequest` API and a direct CoreSimulator pasteboard
+  bridge for Unicode paste without launching a simulator CLI.
 
 ### Changed
 
@@ -40,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Made `SimUseExecutableCommand.ExecutionResult` explicitly `Sendable` and
   applied the same value-type constraint to all built-in iOS and Android
   command results.
+- Moved the iOS Viewer, device discovery, pasteboard writes, and foreground
+  bundle lookup onto direct Swift/CoreSimulator interfaces. The iOS paths no
+  longer launch a simulator CLI or the `sim-use` executable as an adapter.
 
 ### Fixed
 
