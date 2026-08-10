@@ -107,11 +107,14 @@ public enum IOSSimulatorPasteboard {
         let selector = NSSelectorFromString(
             "initWithConnectingToPort:managingPasteboard:delegate:delegateQueue:"
         )
-        guard let method = class_getInstanceMethod(interfaceClass, selector) else {
+        guard class_getInstanceMethod(interfaceClass, selector) != nil else {
             return false
         }
-        guard let allocated = class_createInstance(interfaceClass, 0) as? NSObject else {
+        guard let allocated = allocateObject(interfaceClass) else {
             throw BridgeError.pasteboardWriteFailed("SimPasteboardPlus could not allocate its interface.")
+        }
+        guard let message = dynamicSymbol(named: "objc_msgSend") else {
+            throw BridgeError.pasteboardWriteFailed("Objective-C messaging is unavailable.")
         }
         typealias Initializer = @convention(c) (
             AnyObject,
@@ -120,23 +123,30 @@ public enum IOSSimulatorPasteboard {
             AnyObject,
             AnyObject?,
             AnyObject?
-        ) -> AnyObject?
-        let initialize = unsafeBitCast(method_getImplementation(method), to: Initializer.self)
-        guard let interface = initialize(
-            allocated,
+        ) -> Unmanaged<AnyObject>?
+        let initialize = unsafeBitCast(message, to: Initializer.self)
+        guard let initialized = initialize(
+            allocated.takeUnretainedValue(),
             selector,
             port,
             pasteboard,
             nil,
             DispatchQueue.global(qos: .utility)
-        ) else {
+        ), let interface = initialized.takeRetainedValue() as? NSObject else {
             throw BridgeError.pasteboardWriteFailed("SimPasteboardPlus could not connect to the device.")
         }
 
-        guard interface.responds(to: NSSelectorFromString("push")) else {
+        let pushSelector = NSSelectorFromString("push")
+        guard let pushMethod = class_getInstanceMethod(interfaceClass, pushSelector) else {
             throw BridgeError.pasteboardWriteFailed("SimPasteboardPlus does not support push.")
         }
-        _ = interface.perform(NSSelectorFromString("push"))
+        guard let pushEncoding = method_getTypeEncoding(pushMethod),
+              String(cString: pushEncoding) == "v16@0:8" else {
+            throw BridgeError.pasteboardWriteFailed("SimPasteboardPlus exposes an unsupported push signature.")
+        }
+        guard sendVoidMessage(to: interface, selector: pushSelector) else {
+            throw BridgeError.pasteboardWriteFailed("Objective-C messaging is unavailable.")
+        }
         return true
     }
 
@@ -157,8 +167,11 @@ public enum IOSSimulatorPasteboard {
             type: "public.utf8-plain-text"
         )
         let selector = NSSelectorFromString("setPasteboardWithItems:error:")
-        guard let method = class_getInstanceMethod(type(of: pasteboard), selector) else {
+        guard class_getInstanceMethod(type(of: pasteboard), selector) != nil else {
             return false
+        }
+        guard let message = dynamicSymbol(named: "objc_msgSend") else {
+            throw BridgeError.pasteboardWriteFailed("Objective-C messaging is unavailable.")
         }
         typealias Setter = @convention(c) (
             AnyObject,
@@ -166,7 +179,7 @@ public enum IOSSimulatorPasteboard {
             NSArray,
             UnsafeMutablePointer<NSError?>?
         ) -> UInt64
-        let setItems = unsafeBitCast(method_getImplementation(method), to: Setter.self)
+        let setItems = unsafeBitCast(message, to: Setter.self)
         var error: NSError?
         _ = setItems(pasteboard, selector, [item], &error)
         if let error {
@@ -180,25 +193,32 @@ public enum IOSSimulatorPasteboard {
         text: String,
         type: String
     ) throws -> NSObject {
-        guard let item = class_createInstance(itemClass, 0) as? NSObject else {
+        guard let item = allocateObject(itemClass) else {
             throw BridgeError.pasteboardWriteFailed("SimPasteboardItem could not be allocated.")
         }
         let initSelector = NSSelectorFromString("init")
-        guard let initMethod = class_getInstanceMethod(itemClass, initSelector) else {
+        guard class_getInstanceMethod(itemClass, initSelector) != nil else {
             throw BridgeError.pasteboardWriteFailed("SimPasteboardItem could not be initialized.")
         }
-        typealias Initializer = @convention(c) (AnyObject, Selector) -> AnyObject?
-        let initialize = unsafeBitCast(method_getImplementation(initMethod), to: Initializer.self)
-        guard let initialized = initialize(item, initSelector) as? NSObject else {
+        guard let message = dynamicSymbol(named: "objc_msgSend") else {
+            throw BridgeError.pasteboardWriteFailed("Objective-C messaging is unavailable.")
+        }
+        typealias Initializer = @convention(c) (AnyObject, Selector) -> Unmanaged<AnyObject>?
+        let initialize = unsafeBitCast(message, to: Initializer.self)
+        guard let initialized = initialize(item.takeUnretainedValue(), initSelector),
+              let initialized = initialized.takeRetainedValue() as? NSObject else {
             throw BridgeError.pasteboardWriteFailed("SimPasteboardItem initialization failed.")
         }
 
         let setSelector = NSSelectorFromString("setValue:forType:")
-        guard let setMethod = class_getInstanceMethod(itemClass, setSelector) else {
+        guard class_getInstanceMethod(itemClass, setSelector) != nil else {
             throw BridgeError.pasteboardWriteFailed("SimPasteboardItem does not support text values.")
         }
+        guard let message = dynamicSymbol(named: "objc_msgSend") else {
+            throw BridgeError.pasteboardWriteFailed("Objective-C messaging is unavailable.")
+        }
         typealias ValueSetter = @convention(c) (AnyObject, Selector, AnyObject, AnyObject) -> Bool
-        let setValue = unsafeBitCast(method_getImplementation(setMethod), to: ValueSetter.self)
+        let setValue = unsafeBitCast(message, to: ValueSetter.self)
         guard setValue(initialized, setSelector, text as NSString, type as NSString) else {
             throw BridgeError.pasteboardWriteFailed("SimPasteboardItem rejected the text payload.")
         }
@@ -206,18 +226,48 @@ public enum IOSSimulatorPasteboard {
     }
 
     private static func classPropertyString(_ type: AnyClass, selector propertySelector: Selector) -> String? {
-        guard let method = class_getClassMethod(type, propertySelector) else {
+        guard class_getClassMethod(type, propertySelector) != nil else {
             return nil
         }
-        typealias Getter = @convention(c) (AnyObject, Selector) -> AnyObject?
-        let getValue = unsafeBitCast(method_getImplementation(method), to: Getter.self)
-        return getValue(type, propertySelector) as? String
+        guard let message = dynamicSymbol(named: "objc_msgSend") else {
+            return nil
+        }
+        typealias Getter = @convention(c) (AnyObject, Selector) -> Unmanaged<AnyObject>?
+        let getValue = unsafeBitCast(message, to: Getter.self)
+        return getValue(type, propertySelector)?.takeUnretainedValue() as? String
+    }
+
+    private static func allocateObject(_ type: AnyClass) -> Unmanaged<AnyObject>? {
+        guard let symbol = dynamicSymbol(named: "class_createInstance") else {
+            return nil
+        }
+        typealias Allocate = @convention(c) (AnyClass, Int) -> Unmanaged<AnyObject>?
+        let allocate = unsafeBitCast(symbol, to: Allocate.self)
+        return allocate(type, 0)
+    }
+
+    private static func dynamicSymbol(named name: String) -> UnsafeMutableRawPointer? {
+        let defaultHandle = UnsafeMutableRawPointer(bitPattern: UInt.max - 1)
+        return dlsym(defaultHandle, name)
+    }
+
+    private static func sendVoidMessage(to receiver: AnyObject, selector: Selector) -> Bool {
+        guard let message = dynamicSymbol(named: "objc_msgSend") else {
+            return false
+        }
+        typealias Message = @convention(c) (AnyObject, Selector) -> Void
+        let send = unsafeBitCast(message, to: Message.self)
+        send(receiver, selector)
+        return true
     }
 
     private static func lookup(serviceName: String, on device: NSObject) throws -> UInt32 {
         let selector = NSSelectorFromString("lookup:error:")
-        guard let method = class_getInstanceMethod(type(of: device), selector) else {
+        guard class_getInstanceMethod(type(of: device), selector) != nil else {
             throw BridgeError.pasteboardWriteFailed("CoreSimulator does not expose device service lookup.")
+        }
+        guard let message = dynamicSymbol(named: "objc_msgSend") else {
+            throw BridgeError.pasteboardWriteFailed("Objective-C messaging is unavailable.")
         }
         typealias Lookup = @convention(c) (
             AnyObject,
@@ -225,7 +275,7 @@ public enum IOSSimulatorPasteboard {
             AnyObject,
             UnsafeMutablePointer<NSError?>?
         ) -> UInt32
-        let findPort = unsafeBitCast(method_getImplementation(method), to: Lookup.self)
+        let findPort = unsafeBitCast(message, to: Lookup.self)
         var error: NSError?
         let port = findPort(device, selector, serviceName as NSString, &error)
         if let error {
