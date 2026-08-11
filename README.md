@@ -190,7 +190,7 @@ sim-use type --file input.txt --device $UDID
 
 ### Paste (IME-safe Unicode)
 
-`sim-use paste` writes text to the simulator pasteboard (`simctl pbcopy`) and issues Cmd+V, so characters reach the focused field without going through the keyboard. This bypasses host IME composition (e.g. Japanese kana remapping ASCII keys) and accepts arbitrary Unicode the HID keycode table cannot express (CJK, emoji, diacritics).
+`sim-use paste` writes text through the in-process Swift Simulator pasteboard bridge and issues Cmd+V, so characters reach the focused field without going through the keyboard. This bypasses host IME composition (e.g. Japanese kana remapping ASCII keys) and accepts arbitrary Unicode the HID keycode table cannot express (CJK, emoji, diacritics).
 
 ```bash
 sim-use paste 'ABC 日本語 🎉' --device $UDID             # at caret

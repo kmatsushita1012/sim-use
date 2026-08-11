@@ -7,6 +7,7 @@ import Darwin
 import SimUseCore
 import AndroidBackend
 import iOSSimBackend
+import SimUseKit
 
 // MARK: - Main Entry Point
 //
@@ -39,6 +40,14 @@ private let iOSOnlyVerbRedirects: [String: String] = [
 @main
 enum EntryPoint {
     static func main() async {
+        _ = NSApplication.shared
+        DeviceResolver.installAsyncBootedListProvider {
+            let devices = try await listIOSSimulators()
+            return devices.filter { $0.isUsable }.map {
+                DeviceResolver.BootedSimulator(udid: $0.udid, name: $0.name)
+            }
+        }
+
         // Wire the ping-time bridge-version check before any command
         // runs. Release builds (`vX.Y.Z` tags) install the expected
         // value; dev / dirty builds leave it nil so the check is a
@@ -64,6 +73,12 @@ enum EntryPoint {
         }
         await SimUse.main()
     }
+
+    @MainActor
+    private static func listIOSSimulators() async throws -> [Device] {
+        try await SimUseClient().listSimulators(includeAll: true)
+    }
+
 }
 
 struct SimUse: AsyncParsableCommand {

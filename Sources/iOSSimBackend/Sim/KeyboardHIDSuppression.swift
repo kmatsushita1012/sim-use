@@ -52,8 +52,9 @@ enum KeyboardHIDSuppression {
              CoreDevice HID client reconnects the legacy keyboard and `type` works
              (verified on iOS 27). A live re-boot is required - the legacy service
              is disconnected at boot, so closing Device Hub alone is not enough:
-               xcrun simctl shutdown \(udid) && xcrun simctl boot \(udid)
-             (`simctl boot` is headless; `open -a Simulator` shows the window -
+               Shut down and boot \(udid) again from Simulator.app or your
+               normal Simulator management tooling.
+             (A headless boot is sufficient; opening Simulator.app shows the window -
              the classic Simulator.app does not trigger dtuhidd, only Device Hub does.)
           2. Or use the touch-driven pasteboard path (bypasses keyboard HID):
                sim-use tap <target> --udid \(udid)
@@ -76,36 +77,68 @@ enum KeyboardHIDSuppression {
     }
 
     private static func processTable() -> [ProcessEntry]? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        // -axww: every process, full (untruncated) command line.
-        process.arguments = ["-axww", "-o", "pid=,ppid=,command="]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return nil
+        // libproc/sysctl gives us the same process metadata without forking
+        // the host's `ps` command. `KERN_PROCARGS2` is used because the
+        // simulator UDID is part of launchd_sim's argv, not its executable
+        // name.
+        let reportedCount = proc_listallpids(nil, 0)
+        guard reportedCount > 0 else { return nil }
+
+        var pids = [pid_t](repeating: 0, count: Int(reportedCount))
+        let writtenCount = proc_listallpids(
+            &pids,
+            Int32(pids.count * MemoryLayout<pid_t>.stride)
+        )
+        guard writtenCount > 0 else { return nil }
+
+        return pids.prefix(Int(writtenCount)).compactMap { pid in
+            processEntry(pid: pid)
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0,
-              let output = String(data: data, encoding: .utf8)
-        else {
+    }
+
+    private static func processEntry(pid: pid_t) -> ProcessEntry? {
+        var info = proc_bsdinfo()
+        let expectedSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, expectedSize) == expectedSize else {
             return nil
         }
 
-        return output.split(separator: "\n").compactMap { line in
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            let parts = trimmed.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
-            guard parts.count >= 3,
-                  let pid = Int32(parts[0]),
-                  let ppid = Int32(parts[1])
-            else {
-                return nil
-            }
-            return ProcessEntry(pid: pid, ppid: ppid, command: String(parts[2]))
+        let path = processPath(pid: pid)
+        let arguments = processArguments(pid: pid)
+        let command = ([path] + arguments.dropFirst()).joined(separator: " ")
+        guard !command.isEmpty else { return nil }
+        return ProcessEntry(pid: pid, ppid: Int32(info.pbi_ppid), command: command)
+    }
+
+    private static func processPath(pid: pid_t) -> String {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard length > 0 else { return "" }
+        return String(cString: buffer)
+    }
+
+    private static func processArguments(pid: pid_t) -> [String] {
+        var mib = [Int32](arrayLiteral: Int32(CTL_KERN), Int32(KERN_PROCARGS2), pid)
+        var size = 0
+        guard sysctl(&mib, u_int(mib.count), nil, &size, nil, 0) == 0, size > 4 else {
+            return []
         }
+
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard buffer.withUnsafeMutableBytes({ bytes in
+            sysctl(&mib, u_int(mib.count), bytes.baseAddress, &size, nil, 0)
+        }) == 0 else {
+            return []
+        }
+
+        let argc = Int(buffer[0])
+            | (Int(buffer[1]) << 8)
+            | (Int(buffer[2]) << 16)
+            | (Int(buffer[3]) << 24)
+        guard argc > 0 else { return [] }
+        return buffer.dropFirst(4)
+            .split(separator: 0, omittingEmptySubsequences: true)
+            .prefix(argc)
+            .map { String(decoding: $0, as: UTF8.self) }
     }
 }

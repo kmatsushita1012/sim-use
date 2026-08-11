@@ -8,7 +8,7 @@ import Testing
 // Coverage for LINEIOS-216941: `paste` is now an accepted batch step
 // verb. The default Cmd+V path is supported; `--via-menu` and `--stdin`
 // are rejected with actionable messages. These tests exercise the
-// parser surface — the actual HID + pbcopy plumbing has integration
+// parser surface — the actual HID + pasteboard bridge has integration
 // coverage gated on a real simulator (BatchPasteStepE2ETests).
 
 @Suite("Batch — paste step parsing")
@@ -37,18 +37,18 @@ struct BatchPasteStepParsingTests {
         #expect(BatchStepKind(rawValue: "paste") == .paste)
     }
 
-    @Test("`paste 'hello'` produces hostAction(pbcopy) + hidBarrier(Cmd+V)")
+    @Test("`paste 'hello'` produces hostAction(pasteboard) + hidBarrier(Cmd+V)")
     func defaultPathPrimitives() async throws {
         let primitives = try await parse(["paste", "hello"])
 
         #expect(primitives.count == 2,
-                "expected pbcopy + Cmd+V; got \(primitives.count) primitives")
+                "expected pasteboard + Cmd+V; got \(primitives.count) primitives")
         guard case .hostAction(let action) = primitives.first else {
-            Issue.record("first primitive should be a hostAction (simctl pbcopy); got \(primitives)")
+            Issue.record("first primitive should be a hostAction (pasteboard bridge); got \(primitives)")
             return
         }
-        #expect(action.label.contains("pbcopy"),
-                "host action label should mention pbcopy; got '\(action.label)'")
+        #expect(action.label.contains("pasteboard"),
+                "host action label should mention pasteboard; got '\(action.label)'")
 
         guard case .hidBarrier = primitives.last else {
             Issue.record("last primitive should be a hidBarrier (Cmd+V combo); got \(primitives)")
@@ -61,7 +61,7 @@ struct BatchPasteStepParsingTests {
         let primitives = try await parse(["paste", "--replace", "hello"])
 
         #expect(primitives.count == 3,
-                "expected pbcopy + Cmd+A + Cmd+V; got \(primitives.count) primitives")
+                "expected pasteboard + Cmd+A + Cmd+V; got \(primitives.count) primitives")
         guard case .hostAction = primitives.first else {
             Issue.record("first primitive should be a hostAction; got \(primitives)")
             return
@@ -131,7 +131,7 @@ struct BatchPasteStepParsingTests {
         // the right text reached the action.
         let utf8Count = "日本語 你好 🎉".utf8.count
         #expect(action.label.contains("\(utf8Count)"),
-                "expected pbcopy label to mention the full \(utf8Count)-byte payload; got '\(action.label)'")
+                "expected pasteboard label to mention the full \(utf8Count)-byte payload; got '\(action.label)'")
     }
 
     @Test("`swipe --from x,y --to x,y` is accepted as a batch step")

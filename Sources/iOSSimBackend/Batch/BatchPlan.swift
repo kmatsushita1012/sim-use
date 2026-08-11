@@ -7,7 +7,7 @@ public enum BatchPrimitive {
     case hidMergeable(FBSimulatorHIDEvent)
     case hidBarrier(FBSimulatorHIDEvent)
     case hostSleep(TimeInterval)
-    /// Arbitrary host-side work (e.g. `simctl pbcopy` for `paste` steps).
+    /// Arbitrary host-side work (e.g. a direct Simulator pasteboard write).
     /// Forces a flush of pending mergeable HID events first so visible
     /// ordering matches the step list. Receives the live HID `Session`
     /// and logger so the action can perform follow-up HID work without

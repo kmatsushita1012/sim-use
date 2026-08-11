@@ -80,6 +80,16 @@ Five verbs are iOS-only (`key`, `key-combo`, `key-sequence`, `stream-video`, `ba
 
 `SimUseExecutableCommand.run()` forwards UDID-scoped verbs to a per-UDID auto-spawned daemon (`Sources/SimUseCore/Daemon/`). Platform-agnostic — both iOS and Android verbs route through it. Key regression test: `Tests/DaemonCommandParserInjectionTests.swift`.
 
+## Fork先での実装規約（iOS）
+
+- iOS Simulatorの操作・状態取得・Viewer・アプリ向けAPIは、CLI経由で実装しない。`Process`で`sim-use`自身、`xcrun`、`simctl`などを起動したり、CLIの標準入出力やJSON envelopeを経由したりしてはならない。
+- iOSの正規の実装経路は、SwiftからFBSimulatorControl/CoreSimulatorなどの内部実装へ直接ブリッジすること。必要な処理は型付きのSwift interfaceとして実装し、CLIコマンドはその薄い入口に限定する。
+- iOSコマンドからdaemonプロセスやdaemon socketへ処理を転送してはならない。状態保持が必要な場合も、Swiftのactor・session・直接ブリッジで解決する。
+- 直接ブリッジが利用できない場合にCLIへフォールバックしてはならない。型付きエラーとして呼び出し元へ返し、利用可能なSwift bridgeを追加する。
+- 新しい`SimUseKit`の公開APIは、`import SimUseKit`だけで利用できる明示的な`public`型として提供し、CLIのArgumentParser型を公開APIの依存にしない。
+- iOSの既存コードを変更するときは、`Process(`、`xcrun`、`simctl`、`Bundle.main.executablePath`、daemon呼び出しを検索し、CLI経由が混入していないことを確認する。
+- Android側はこの規約の対象外とし、既存の`adb`/bridge経路をiOS対応のために変更しない。
+
 ## Android development
 
 The `bridge/` directory contains a Kotlin Android app (AccessibilityService + HTTP server) that the Swift CLI talks to over `adb forward`.
