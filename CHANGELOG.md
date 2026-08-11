@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the iOS foreground-app resolver so CoreSimulator `launchctl list` output is drained while the spawned process runs and the process is terminated on timeout.
 - Fixed an iOS pasteboard crash caused by incorrect ARC ownership around the dynamically initialized `SimPasteboardPlus` interface and its untyped `push` invocation. The bridge now uses explicit `Unmanaged` ownership and verified Objective-C method signatures.
 - Fixed `GesturePreset` visibility for macOS clients by exposing it explicitly
   through the `SimUseKit` public facade.

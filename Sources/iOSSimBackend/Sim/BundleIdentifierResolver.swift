@@ -184,6 +184,24 @@ public enum BundleIdentifierResolver {
         )
         options.setObject(NSNumber(value: true), forKey: "standalone" as NSString)
 
+        let outputLock = NSLock()
+        var stdoutData = Data()
+        var stderrData = Data()
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            outputLock.lock()
+            stdoutData.append(chunk)
+            outputLock.unlock()
+        }
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            outputLock.lock()
+            stderrData.append(chunk)
+            outputLock.unlock()
+        }
+
         let finished = DispatchSemaphore(value: 0)
         let statusLock = NSLock()
         var status: Int32 = -1
@@ -197,11 +215,18 @@ public enum BundleIdentifierResolver {
         let selector = NSSelectorFromString(
             "spawnWithPath:options:terminationQueue:terminationHandler:pid:error:"
         )
-        guard let method = class_getInstanceMethod(type(of: device), selector) else {
+        guard class_getInstanceMethod(type(of: device), selector) != nil else {
             throw NSError(
                 domain: "BundleIdentifierResolver",
                 code: 2,
                 userInfo: [NSLocalizedDescriptionKey: "CoreSimulator does not expose SimDevice.spawn."]
+            )
+        }
+        guard let message = dynamicSymbol(named: "objc_msgSend") else {
+            throw NSError(
+                domain: "BundleIdentifierResolver",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Objective-C messaging is unavailable."]
             )
         }
         typealias Spawn = @convention(c) (
@@ -214,7 +239,7 @@ public enum BundleIdentifierResolver {
             UnsafeMutablePointer<Int32>?,
             UnsafeMutablePointer<NSError?>?
         ) -> Bool
-        let spawn = unsafeBitCast(method_getImplementation(method), to: Spawn.self)
+        let spawn = unsafeBitCast(message, to: Spawn.self)
         var pid: Int32 = 0
         var spawnError: NSError?
         let terminationHandlerObject = unsafeBitCast(terminationHandler, to: AnyObject.self)
@@ -232,6 +257,8 @@ public enum BundleIdentifierResolver {
         stderrPipe.fileHandleForWriting.closeFile()
 
         guard succeeded else {
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
             throw spawnError ?? NSError(
                 domain: "BundleIdentifierResolver",
                 code: 3,
@@ -239,29 +266,74 @@ public enum BundleIdentifierResolver {
             )
         }
         guard finished.wait(timeout: .now() + launchctlTimeout) == .success else {
+            let signalSent = terminateSpawnedProcess(device: device, pid: pid)
+            let reaped = finished.wait(timeout: .now() + 0.5) == .success
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            if reaped {
+                _ = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                _ = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            } else {
+                stdoutPipe.fileHandleForReading.closeFile()
+                stderrPipe.fileHandleForReading.closeFile()
+            }
+            let terminationMessage = (signalSent || reaped)
+                ? ""
+                : " CoreSimulator could not terminate the spawned process."
             throw NSError(
                 domain: "BundleIdentifierResolver",
                 code: 4,
-                userInfo: [NSLocalizedDescriptionKey: "Simulator launchctl timed out after \(launchctlTimeout)s"]
+                userInfo: [NSLocalizedDescriptionKey: "Simulator launchctl timed out after \(launchctlTimeout)s.\(terminationMessage)"]
             )
         }
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
+        let stdoutRemainder = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrRemainder = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        outputLock.lock()
+        stdoutData.append(stdoutRemainder)
+        stderrData.append(stderrRemainder)
+        let output = stdoutData
+        let errorOutput = stderrData
+        outputLock.unlock()
 
         statusLock.lock()
         let exitStatus = status
         statusLock.unlock()
         guard exitStatus == 0 else {
-            let message = String(
-                data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
             throw NSError(
                 domain: "BundleIdentifierResolver",
                 code: Int(exitStatus),
-                userInfo: [NSLocalizedDescriptionKey: message]
+                userInfo: [NSLocalizedDescriptionKey: String(data: errorOutput, encoding: .utf8) ?? ""]
             )
         }
-        let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? ""
+        return String(data: output, encoding: .utf8) ?? ""
+    }
+
+    private static func terminateSpawnedProcess(device: NSObject, pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
+        let selector = NSSelectorFromString("sendSignalToProcess:signal:error:")
+        guard class_getInstanceMethod(type(of: device), selector) != nil,
+              let message = dynamicSymbol(named: "objc_msgSend")
+        else {
+            return false
+        }
+        typealias Signal = @convention(c) (
+            AnyObject,
+            Selector,
+            Int32,
+            Int32,
+            UnsafeMutablePointer<NSError?>?
+        ) -> Bool
+        let sendSignal = unsafeBitCast(message, to: Signal.self)
+        var error: NSError?
+        return sendSignal(device, selector, pid, Int32(SIGKILL), &error)
+    }
+
+    private static func dynamicSymbol(named name: String) -> UnsafeMutableRawPointer? {
+        let defaultHandle = UnsafeMutableRawPointer(bitPattern: UInt.max - 1)
+        return dlsym(defaultHandle, name)
     }
 
     private static func findSimulator(udid: String) -> NSObject? {
