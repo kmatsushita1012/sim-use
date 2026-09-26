@@ -4,6 +4,7 @@ import Foundation
 import SimUseCore
 import AndroidBackend
 import iOSSimBackend
+import iOSDeviceBackend
 
 /// Top-level cross-platform `describe-ui` verb. Owns the flag surface
 /// and resolves the target platform, then delegates to the per-backend
@@ -69,6 +70,12 @@ struct DescribeUI: SimUseExecutableCommand {
 
     @OptionGroup var json: JSONOutputOptions
 
+    @Flag(
+        name: .customLong("no-raw"),
+        help: "With --json, omit the raw accessibility tree (`data.raw`) from the envelope. `outline` / `entries` / `lists` are unaffected; on real app screens the raw tree typically dominates the payload."
+    )
+    var noRaw: Bool = false
+
     var jsonOutput: Bool { json.enabled }
 
     @Flag(
@@ -78,7 +85,7 @@ struct DescribeUI: SimUseExecutableCommand {
     var includeOffscreen: Bool = false
 
     mutating func resolveDeferredArguments() throws {
-        try device.resolve()
+        try device.resolve(allowPhysical: true)
     }
 
     var simulatorUDIDForDaemon: String? { device.resolved }
@@ -97,6 +104,8 @@ struct DescribeUI: SimUseExecutableCommand {
         switch PlatformRouter.resolve(udid: device.resolved) {
         case .android:
             return try executeAndroid()
+        case .iOSDevice:
+            return try await executeIOSDevice()
         case .iOSSim, .none:
             return try await executeIOSSim()
         }
@@ -107,6 +116,15 @@ struct DescribeUI: SimUseExecutableCommand {
     }
 
     private func executeIOSSim() async throws -> ExecutionResult {
+        let sub = makeIOSSubcommand()
+        return try await sub.execute()
+    }
+
+    /// Construct the backend command and copy every parsed flag across.
+    /// A missed field stays in ArgumentParser's wrapper-definition state
+    /// and traps on first read (#42) — pinned by
+    /// `ForwarderInitializationGuardTests`.
+    func makeIOSSubcommand() -> IOSSimDescribeUICommand {
         var sub = IOSSimDescribeUICommand()
         sub.point = point
         sub.maxProbes = maxProbes
@@ -115,7 +133,50 @@ struct DescribeUI: SimUseExecutableCommand {
         sub.seedCellHeight = seedCellHeight
         sub.device = device
         sub.json = json
-        return try await sub.execute()
+        sub.noRaw = noRaw
+        return sub
+    }
+
+    /// Physical-iOS dispatch: routes through the audit-channel reader
+    /// (`IOSDeviceCommand.UI.performUI`, shared with `sim-use ios-device
+    /// ui`) and reshapes its result into the shared envelope. The
+    /// restricted shape is explicit rather than faked: `kind:
+    /// "physical"`, no `raw` tree, no `entries`/`lists` (the channel
+    /// exposes no frames, so there is nothing to alias or sort), no
+    /// `screen`. The outline text — including the element/node/timing
+    /// summary line, so this surface stays byte-identical to
+    /// `ios-device ui` — is the payload; elements are addressed by the
+    /// `#id`s it renders. The probe-tuning flags (`--max-probes` etc.)
+    /// drive the simulator quadtree and have no meaning here; like
+    /// `--include-offscreen` on iOS, they are accepted and ignored.
+    /// `--point` is not: it promises coordinate semantics, so it
+    /// rejects loudly instead of degrading.
+    private func executeIOSDevice() async throws -> ExecutionResult {
+        guard point == nil else {
+            throw TargetCapabilityError.physicalIOS(
+                verb: "describe-ui --point",
+                reason: "the accessibility audit channel exposes no element geometry, so there is nothing to hit-test at a coordinate.",
+                alternative: "Run `sim-use ui --device \(device.resolved)` and read the full outline; elements are addressed by `#<id>` or label."
+            )
+        }
+        return Self.physicalExecutionResult(from: try await IOSDeviceCommand.UI.performUI(udid: device.resolved))
+    }
+
+    /// Pure reshape of the audit-channel result into the shared
+    /// envelope, split out so tests can pin the restricted shape
+    /// without a device.
+    static func physicalExecutionResult(from result: IOSDeviceCommand.UI.ExecutionResult) -> ExecutionResult {
+        ExecutionResult(
+            platform: "ios",
+            kind: "physical",
+            raw: nil,
+            outline: IOSDeviceCommand.UI.renderedText(result),
+            entries: [],
+            lists: [],
+            screen: nil,
+            appLabel: "",
+            appPackage: ""
+        )
     }
 
     /// Android dispatch: routes through `AndroidDescribeUICommand.performDescribeUI`
@@ -127,7 +188,7 @@ struct DescribeUI: SimUseExecutableCommand {
         let result = try AndroidDescribeUICommand.performDescribeUI(
             udid: device.resolved,
             includeOffscreen: includeOffscreen,
-            includeRaw: jsonOutput
+            includeRaw: jsonOutput && !noRaw
         )
         return ExecutionResult(
             platform: result.platform.rawValue,

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
-import Dispatch
 import FBSimulatorControl
 import SimUseCore
 import iOSSimBackend
@@ -10,12 +9,13 @@ import iOSSimBackend
 /// The client deliberately does not start a CLI process, parse command-line
 /// arguments, or use the daemon socket. All operations call the existing
 /// backend implementations directly. FBSimulatorControl's state is isolated
-/// behind one worker actor per
-/// simulator. UI code does not need to run on MainActor to use this client.
-public actor SimUseClient {
+/// behind one worker actor per simulator. The private framework calls
+/// themselves run on MainActor, as required by the simulator runtime.
+@MainActor
+public final class SimUseClient {
     private var workers: [String: SimulatorWorker] = [:]
 
-    public init() {}
+    nonisolated public init() {}
 
     /// Opens (or reuses) a connection for one simulator. The returned
     /// session is a lightweight handle; the HID object remains owned by the
@@ -91,20 +91,20 @@ public actor SimUseClient {
 
     /// Explicitly drops the cached HID session for one simulator.
     public func invalidateSession(for deviceID: SimulatorID) async {
-        await worker(for: deviceID).invalidate()
+        worker(for: deviceID).invalidate()
     }
 
     /// Drops all cached HID sessions owned by this client.
     public func invalidateAllSessions() async {
         for worker in workers.values {
-            await worker.invalidate()
+            worker.invalidate()
         }
         workers.removeAll()
         HIDInteractor.clearHIDConnections()
     }
 
     func resetLiveness(for deviceID: SimulatorID, to snapshot: AppSnapshot) async {
-        await worker(for: deviceID).resetLiveness(to: snapshot, now: Date())
+        worker(for: deviceID).resetLiveness(to: snapshot, now: Date())
     }
 
     private func worker(for deviceID: SimulatorID) -> SimulatorWorker {
@@ -181,26 +181,29 @@ public final class SimulatorSession: @unchecked Sendable {
 /// Owns all mutable state associated with one simulator. A separate worker
 /// is created for every UDID, so operations for different simulators can
 /// proceed concurrently while HID events for one simulator remain ordered.
-private actor SimulatorWorker {
+@MainActor
+private final class SimulatorWorker {
     private let deviceID: SimulatorID
-    private let executor: DispatchSerialQueue
-    private var hidSession: HIDInteractor.Session?
+    private var session: HIDInteractor.Session?
     private let livenessTracker = ProcessLivenessTracker()
 
     init(deviceID: SimulatorID) {
         self.deviceID = deviceID
-        self.executor = DispatchSerialQueue(label: "com.simuse.simulator.\(deviceID.rawValue)")
-    }
-
-    nonisolated var unownedExecutor: UnownedSerialExecutor {
-        executor.asUnownedSerialExecutor()
     }
 
     func open() async throws {
-        if hidSession == nil {
-            hidSession = try await HIDInteractor.makeSession(
+        if session == nil {
+            // Match every CLI HID verb: merely creating the HID transport
+            // does not load all private framework layers required for
+            // reliable pointer delivery. Keyboard events can appear to
+            // work without this, while touch events may be delivered to a
+            // stale surface.
+            let logger = SimUseLogger()
+            try await performEssentialSetup(logger: logger)
+            try await performGlobalSetup(logger: logger)
+            session = try await HIDInteractor.makeSession(
                 for: deviceID.rawValue,
-                logger: SimUseLogger(silent: true)
+                logger: logger
             )
         }
     }
@@ -213,37 +216,36 @@ private actor SimulatorWorker {
         guard !events.isEmpty else { return [] }
         try validate(events)
         do {
-            if hidSession == nil {
+            if session == nil {
                 try await open()
             }
-            guard var session = hidSession else {
-                throw SimUseError.staleSession(deviceID: deviceID.rawValue, underlying: "HID session was not created.")
+            guard let session else {
+                throw SimUseError.transient("Simulator HID session was not initialized.")
             }
-            let logger = SimUseLogger(silent: true)
+            let logger = SimUseLogger()
             let start = Date.timeIntervalSinceReferenceDate
             var previous = start
             var timings: [HIDEventTiming] = []
             timings.reserveCapacity(events.count)
             for (index, event) in events.enumerated() {
-                session = try await HIDInteractor.performHIDEventReturningSession(
+                try await HIDInteractor.performHIDEvent(
                     event.makeBackendEvent(),
                     in: session,
                     logger: logger
                 )
-                hidSession = session
                 let now = Date.timeIntervalSinceReferenceDate
                 timings.append(HIDEventTiming(index: index, event: event, interval: now - previous, elapsed: now - start))
                 previous = now
             }
             return timings
         } catch {
-            hidSession = nil
+            session = nil
             throw error
         }
     }
 
     func invalidate() {
-        hidSession = nil
+        session = nil
         HIDInteractor.clearHIDConnection(for: deviceID.rawValue)
     }
 
@@ -291,7 +293,7 @@ public struct SimulatorID: Hashable, Codable, Sendable, ExpressibleByStringLiter
     }
 }
 
-public protocol SimUseRequest {
+public protocol SimUseRequest: Sendable {
     associatedtype Output: Sendable
 
     func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> Output
@@ -316,11 +318,11 @@ public enum HIDEvent: Sendable {
     fileprivate func makeBackendEvent() -> FBSimulatorHIDEvent {
         switch self {
         case let .touchDown(x, y):
-            return FBSimulatorHIDEvent.touchDownAt(x: x, y: y)
+            return .touch(direction: .down, x: x, y: y)
         case let .touchMove(x, y):
-            return FBSimulatorHIDEvent.touchDownAt(x: x, y: y)
+            return .touch(direction: .down, x: x, y: y)
         case let .touchUp(x, y):
-            return FBSimulatorHIDEvent.touchUpAt(x: x, y: y)
+            return .touch(direction: .up, x: x, y: y)
         case let .tap(x, y):
             return FBSimulatorHIDEvent.tapAt(x: x, y: y)
         case let .swipe(startX, startY, endX, endY, delta, duration):
@@ -333,13 +335,13 @@ public enum HIDEvent: Sendable {
                 duration: duration
             )
         case let .keyDown(keyCode):
-            return FBSimulatorHIDEvent.keyDown(keyCode)
+            return .keyboard(direction: .down, keyCode: keyCode)
         case let .keyUp(keyCode):
-            return FBSimulatorHIDEvent.keyUp(keyCode)
+            return .keyboard(direction: .up, keyCode: keyCode)
         case let .buttonDown(button):
-            return FBSimulatorHIDEvent.buttonDown(FBSimulatorHIDButton(rawValue: Int32(button))!)
+            return .button(direction: .down, button: FBSimulatorHIDButton(rawValue: Int32(button))!)
         case let .buttonUp(button):
-            return FBSimulatorHIDEvent.buttonUp(FBSimulatorHIDButton(rawValue: Int32(button))!)
+            return .button(direction: .up, button: FBSimulatorHIDButton(rawValue: Int32(button))!)
         case let .delay(seconds):
             return FBSimulatorHIDEvent.delay(seconds)
         }

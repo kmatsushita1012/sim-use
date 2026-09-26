@@ -27,6 +27,9 @@ public enum SimUseError: Error, LocalizedError, Sendable {
 
     public static func map(_ error: Error, deviceID: String) -> SimUseError {
         if let error = error as? SimUseError { return error }
+        if let error = error as? TextRequestError {
+            return .invalidRequest(error.localizedDescription)
+        }
         let message = error.localizedDescription
         if error is ValidationError {
             return .invalidRequest(message)

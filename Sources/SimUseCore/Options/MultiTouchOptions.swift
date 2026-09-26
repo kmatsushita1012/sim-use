@@ -43,6 +43,19 @@ public struct MultiTouchOptions: ParsableArguments {
 
     public init() {}
 
+    /// Value initializer for direct backend use outside ArgumentParser.
+    public init(
+        fingers: Int = 1,
+        x2: Double? = nil,
+        y2: Double? = nil,
+        fingerDistance: Double = 50.0
+    ) {
+        self.fingers = fingers
+        self.x2 = x2
+        self.y2 = y2
+        self.fingerDistance = fingerDistance
+    }
+
     /// Resolve finger 2's position given the resolved finger 1 point.
     /// Returns `(x, y)` directly if both `--x2` and `--y2` were
     /// supplied; otherwise applies the `--finger-distance` offset on

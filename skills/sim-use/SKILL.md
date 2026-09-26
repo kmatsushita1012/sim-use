@@ -1,6 +1,6 @@
 ---
 name: sim-use
-description: Drive iOS Simulator and Android emulator/device screens for AI agents. Use when asked to automate a simulator or emulator, tap/swipe/type on a device, describe UI, take a screenshot, or interact with a mobile app.
+description: Drive iOS Simulator, Android emulator/device, and physical iPhone/iPad screens for AI agents. Use when asked to automate a simulator or emulator, drive a real iOS device, tap/swipe/type on a device, describe UI, take a screenshot, or interact with a mobile app.
 ---
 
 ## 0. Preflight
@@ -17,7 +17,7 @@ This verifies sim-use is installed, the device is reachable, and the daemon is h
 2. `sim-use devices` — confirm the target device is listed and booted/connected.
 3. `sim-use ui --device <UDID>` — confirm you can read the screen.
 
-`--device` is optional when only one simulator is booted or one daemon is running. For Android, run `sim-use android init --device <serial>` once to install the bridge APK.
+`--device` is optional when only one simulator is booted or one daemon is running. For Android, run `sim-use android init --device <serial>` once to install the bridge APK. Attached physical iPhones/iPads appear in `sim-use devices` with kind `physical` and route through the top-level verbs too — but only `ui`, selector-based `tap` and `screenshot`; every other verb rejects on that target. See *Physical iOS devices* below before driving one.
 
 ## 1. The observe-act loop
 
@@ -31,7 +31,7 @@ sim-use ui --device <UDID>
 
 Read the outline. Each element has an `@N` alias and optionally a `#<id>` identifier. List cells carry `#N` (dominant list) or `#N@M` (scoped).
 
-Frames in the JSON output (`--json`: `entries[].frame`, `screen`) are in platform-native units — iOS **points**, Android **pixels**. Key off the envelope's `platform` field before doing math on coordinates across platforms.
+Frames in the JSON output (`--json`: `entries[].frame`, `screen`) are in platform-native units — iOS **points**, Android **pixels**. Key off the envelope's `platform` field before doing math on coordinates across platforms. Always pair `--json` with `--no-raw` — see *Keeping output small* below.
 
 ### Act
 
@@ -57,6 +57,17 @@ sim-use ui --device <UDID>       # read the new screen state
 sim-use screenshot --device <UDID> --output after.png
 ```
 
+### Keeping output small
+
+Every byte of command output you read costs context. Defaults that keep the loop cheap:
+
+- Prefer the default text outline over `--json`. The outline carries everything a tap needs (`@N` / `#<id>` aliases, roles, frames, states); reach for `--json` when you need structured fields for coordinate math (`entries[].frame`, `screen`) or full untruncated text (the outline truncates labels at 60 graphemes, `value=` at 30).
+- When you do use `--json`, add `--no-raw`. `data.raw` is the raw accessibility tree — typically the bulk of the envelope's bytes, and useful only for debugging sim-use itself.
+- One `ui` per action: the Verify read of step N is the Observe read of step N+1. Don't run a second `ui` in between.
+- Verify with the text outline, not a screenshot. Reading a screenshot costs several times more than a typical outline; take one only when the check is genuinely visual (colors, images, layout).
+- On iOS, to wait out a transition, prefer `tap --label 'X' --wait-timeout 3` (polls for the element) over re-running `ui` in a loop. Android `tap` has no `--wait-timeout`; use `sleep` between commands instead.
+- For a known multi-step sequence on iOS, use `sim-use ios batch` (see `references/batch-reference.md`) — one invocation, one output.
+
 ### Common moves
 
 | Task | Command |
@@ -71,6 +82,42 @@ sim-use screenshot --device <UDID> --output after.png
 | Swipe | `sim-use swipe --from 50,500 --to 350,500 --device <UDID>` |
 | Pinch zoom in | `sim-use gesture pinch-out --device <UDID>` (two-finger spread) |
 | Rotate | `sim-use gesture rotate-cw --angle 90 --device <UDID>` |
+| Record evidence GIF | `sim-use record-video --output demo.gif --device <UDID>` — stop with SIGINT/SIGTERM (never SIGKILL); transcodes after stop; auto-plays inline in PRs; add `--gif-markers` for START/END loop-boundary cards |
+
+### Physical iOS devices (experimental)
+
+The top-level verbs route a physical UDID automatically, but only three of them: `ui`, `tap` (`#<id>` / `--id` / `--label` / `--label-contains` / `--element-type` forms) and `screenshot`. **Never assume capability parity with the simulator** — every other verb or form (coordinates, `@N`/`#N` aliases, swipe/gesture/multi-touch, type/paste, recording, `--value`/`--label-regex`/`--frame`/`--duration`/`--wait-timeout`) rejects with the reason and the nearest alternative in the `hint`; read it instead of retrying. The `sim-use ios-device` namespace is the physical-only peer of `ios`/`android` (same verbs, plus ECID addressing and tree-tuning flags).
+
+**Hard requirement for `ui` / `tap`:** the device must be paired, trusted, unlocked and in Developer Mode, and the foreground target app must be development-signed with `get-task-allow=true`. A Release-configuration binary installed with a Development profile is supported. Distribution/Ad Hoc, TestFlight, App Store and system apps are unsupported; do not retry them or claim success. sim-use itself installs and signs no runner and needs no Developer Disk Image. `screenshot` is exempt from the signing rule — it runs over CoreDevice and captures any screen, system apps included.
+
+```bash
+# Physical-device preflight — physical rows carry kind `physical`
+sim-use devices
+
+# Observe → act → verify, same loop and verbs as the simulator
+sim-use ui --device <UDID>
+sim-use tap --label "Friends" --element-type Button --device <UDID>
+sim-use ui --device <UDID>
+
+# For dynamic labels
+sim-use tap --label-contains "Reply" --element-type Button --device <UDID>
+
+# By stable identifier (the #id shown in ui) — positional or --id
+sim-use tap '#BackButton' --device <UDID>
+
+# Screenshot — any screen, not limited to development-signed apps
+sim-use screenshot --output shot.png --device <UDID>
+```
+
+Rules for this experimental surface:
+
+1. **Treat hierarchy errors as capability failures.** If the command says the hierarchy is unavailable, confirm the screen is unlocked and inspect the installed app's final `get-task-allow` entitlement. Do not fall back to coordinates or focus walking.
+2. **Tap by `#id` or label, not `@N`.** Element handles expire with the DTX connection, so there is no `@N` alias (nor coordinates — no geometry). Use the `#id` shown in the outline (positional `#<id>` or `--id`) — it is stable and the best choice when a label is dynamic — or `--label` / `--label-contains`, with `--element-type` to disambiguate. The navigation-bar back button appears as a normal `Button "<previous screen title>" #BackButton`; go back by tapping `#BackButton` (or the shown label) like any other element — no special "back" verb.
+3. **Always verify.** Activate is fire-and-forget. Re-run `sim-use ui` and confirm the expected state before continuing.
+4. **Respect the capability rejections.** A `not supported on physical iOS devices` error is a statement about the channel, not a transient failure — follow its hint (usually `ui` + `tap '#<id>' / --label`) instead of retrying or substituting a lookalike form. `--json` works on every verb with the standard `{ok, data}` envelope; physical results carry `"kind":"physical"` and omit geometry fields (`screen`, `x`/`y`).
+5. **Budget seconds, not milliseconds.** A full tree takes a few seconds. `sim-use ios-device ui --fast` is quicker but omits nested elements; do not poll in a tight loop.
+
+If `ui` succeeds with zero elements or `tap` prints success for a missing/ambiguous label, treat it as a sim-use bug; the command is expected to fail loudly instead.
 
 ## 2. Pitfalls
 
@@ -87,7 +134,7 @@ Quick symptom index — see `references/pitfalls.md` for detailed recipes.
 | Android: `paste` denied | Background clipboard access blocked | Use `type` instead |
 | Outline shows `U+FFFC` in label | iOS icon placeholder character | Match with `--label-regex` excluding the prefix |
 | `[i] … covers ~N% of the screen` warning (text output, or `--json` top-level `advisory` key) | The selector resolved to a near-full-screen wrapper (common on Flutter/canvas UIs) and the tap hit its center, likely missing the intended control | Re-run `ui` and target the control via `@N`/`#<id>`, or pass explicit `-x/-y`/`--point` |
-| `[i] Screen orientation could not be confirmed…` / `…coordinates may be stale…` advisory | Device/app is rotated (the `App:` header shows a tag like `(landscape-right)`) and orientation self-calibration couldn't verify the mapping, or the `@N` snapshot predates a rotation | Re-run `ui` and tap again; selectors handle rotation automatically once calibration succeeds. Explicit `-x/-y`/`--point` is always device-native portrait space |
+| `[i] Screen orientation could not be confirmed…` / `…coordinates may be stale…` advisory | Device/app is rotated (the `App:` header shows a tag like `(landscape-right)`) and orientation self-calibration couldn't verify the mapping, or the `@N` snapshot predates a rotation | Re-run `ui` and tap again; selectors handle rotation automatically once calibration succeeds. Explicit `-x/-y`/`--point` is device-native portrait space by default — on `swipe`/`touch`, pass `--coordinate-space ui` to use outline (visual-space) coordinates on a rotated device |
 
 ## 3. Crash awareness
 

@@ -284,6 +284,113 @@ struct OutlineFormatterStateTests {
         """#)
         #expect(outline.entries.first?.states == [#"value="hello@example.com""#])
     }
+
+    @Test("labeled TextArea AXValue surfaces a quoted value tag")
+    func labeledTextAreaValue() throws {
+        // The LINE chat-input shape (LINECLIENT-1695): a UITextView with
+        // an accessibility label. The label owns the label slot, so the
+        // typed text is only visible through the value tag.
+        let outline = try render(#"""
+        [
+          {
+            "type": "Application", "AXLabel": "X",
+            "frame": { "x": 0, "y": 0, "width": 200, "height": 400 },
+            "children": [
+              { "type": "TextArea", "AXLabel": "Message editor",
+                "AXValue": "hello textarea",
+                "frame": { "x": 10, "y": 100, "width": 180, "height": 60 } }
+            ]
+          }
+        ]
+        """#)
+        #expect(outline.entries.first?.label == "Message editor")
+        #expect(outline.entries.first?.states == [#"value="hello textarea""#])
+    }
+
+    @Test("unlabeled TextArea value doubles as the label without a value tag")
+    func unlabeledTextAreaValue() throws {
+        // With no label the value is promoted into the label slot by the
+        // rawLabel fallback; a value tag would print the same string twice.
+        let outline = try render(#"""
+        [
+          {
+            "type": "Application", "AXLabel": "X",
+            "frame": { "x": 0, "y": 0, "width": 200, "height": 400 },
+            "children": [
+              { "type": "TextArea",
+                "AXValue": "draft text",
+                "frame": { "x": 10, "y": 100, "width": 180, "height": 60 } }
+            ]
+          }
+        ]
+        """#)
+        #expect(outline.entries.first?.label == "draft text")
+        #expect(outline.entries.first?.states == [])
+    }
+
+    @Test("unlabeled TextField no longer double-prints its value")
+    func unlabeledTextFieldValue() throws {
+        // Pre-existing wart: a search bar with typed text used to render
+        // `TextField "query" value="query"` — label fallback plus tag.
+        let outline = try render(#"""
+        [
+          {
+            "type": "Application", "AXLabel": "X",
+            "frame": { "x": 0, "y": 0, "width": 200, "height": 400 },
+            "children": [
+              { "type": "TextField",
+                "AXValue": "query text",
+                "frame": { "x": 10, "y": 100, "width": 180, "height": 40 } }
+            ]
+          }
+        ]
+        """#)
+        #expect(outline.entries.first?.label == "query text")
+        #expect(outline.entries.first?.states == [])
+    }
+
+    @Test("Slider value renders unless it merely echoes the label")
+    func sliderValue() throws {
+        // UIPageControl and date-picker wheels surface as Slider with
+        // value == label; only a real thumb position earns a tag.
+        let outline = try render(#"""
+        [
+          {
+            "type": "Application", "AXLabel": "X",
+            "frame": { "x": 0, "y": 0, "width": 200, "height": 400 },
+            "children": [
+              { "type": "Slider", "AXLabel": "Volume",
+                "AXValue": "0.4",
+                "frame": { "x": 10, "y": 100, "width": 180, "height": 40 } },
+              { "type": "Slider", "AXLabel": "page 1 of 3",
+                "AXValue": "page 1 of 3",
+                "frame": { "x": 10, "y": 160, "width": 180, "height": 40 } }
+            ]
+          }
+        ]
+        """#)
+        #expect(outline.entries.count == 2)
+        #expect(outline.entries[0].states == [#"value="0.4""#])
+        #expect(outline.entries[1].states == [])
+    }
+
+    @Test("Button AXValue surfaces a value tag (compact date picker shape)")
+    func buttonValue() throws {
+        let outline = try render(#"""
+        [
+          {
+            "type": "Application", "AXLabel": "X",
+            "frame": { "x": 0, "y": 0, "width": 200, "height": 400 },
+            "children": [
+              { "type": "Button", "AXLabel": "Date Picker",
+                "AXValue": "Sep 9, 2001",
+                "frame": { "x": 10, "y": 100, "width": 180, "height": 40 } }
+            ]
+          }
+        ]
+        """#)
+        #expect(outline.entries.first?.states == [#"value="Sep 9, 2001""#])
+    }
 }
 
 // MARK: - Label escaping

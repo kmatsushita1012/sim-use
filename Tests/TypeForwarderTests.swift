@@ -47,10 +47,13 @@ struct TypeForwarderTests {
     // MARK: - Empty input short-circuit
 
     // Empty input produces zero HID events and must stay a strict
-    // no-op: no HID session is created, so `type ""` neither pays
-    // framework/simulator-set initialisation nor fails against a
-    // device that is not booted — the behaviour an agent's
-    // `type "$VAR"` with an empty variable relies on.
+    // no-op: it returns before the framework preflight (Xcode check,
+    // private-framework load) and never creates a HID session, so
+    // `type ""` neither pays initialisation nor fails against a device
+    // that is not booted — the behaviour an agent's `type "$VAR"` with
+    // an empty variable relies on. Keeping the preflight out of this
+    // path is also what keeps the test independent of the host's
+    // Xcode state (the `xcode-select` subprocess flaked on CI).
     @Test("Empty input succeeds without touching the HID session path")
     func emptyInputShortCircuits() async throws {
         // iOS-shaped UDID that matches no simulator on this host:

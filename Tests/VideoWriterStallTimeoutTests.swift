@@ -2,7 +2,7 @@
 import Testing
 import Foundation
 import AVFoundation
-@testable import iOSSimBackend
+@testable import SimUseVideo
 
 @Suite("H264StreamRecorder writer-readiness timeout policy")
 struct VideoWriterStallTimeoutTests {

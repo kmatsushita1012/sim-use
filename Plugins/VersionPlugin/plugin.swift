@@ -26,6 +26,15 @@ struct VersionPlugin: BuildToolPlugin {
             .filter { $0.type == .source }
             .map(\.path) ?? []
 
+        // The generated command runs with an empty environment, so
+        // `SIM_USE_VERSION` must be resolved here in the plugin process and
+        // baked into the argv. That also fixes cache invalidation: a changed
+        // override changes the command signature, so SPM re-runs the command
+        // even when no source file was touched — `environment:` values are
+        // not part of the cache key, which is how a stale stamp survived
+        // `SIM_USE_VERSION` changes before.
+        let versionOverride = ProcessInfo.processInfo.environment["SIM_USE_VERSION"] ?? ""
+
         return [
             .buildCommand(
                 displayName: "Generate Version.swift",
@@ -36,9 +45,10 @@ struct VersionPlugin: BuildToolPlugin {
                     import Foundation
 
                     func getVersion() -> String {
-                        // Priority 1: Environment variable (CI)
-                        if let envVersion = ProcessInfo.processInfo.environment["SIM_USE_VERSION"] {
-                            return envVersion
+                        // Priority 1: SIM_USE_VERSION, baked into argv by the plugin
+                        let override = CommandLine.arguments[2]
+                        if !override.isEmpty {
+                            return override
                         }
 
                         // Priority 2: Git describe (local development)
@@ -74,6 +84,7 @@ struct VersionPlugin: BuildToolPlugin {
                     try content.write(toFile: "\\(CommandLine.arguments[1])", atomically: true, encoding: .utf8)
                     """,
                     outputPath.string,
+                    versionOverride,
                 ],
                 environment: [:],
                 inputFiles: inputFiles,

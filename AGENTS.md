@@ -19,9 +19,14 @@
 ### First-time setup
 
 ```bash
+brew install xcodegen    # idb generates its Xcode project with XcodeGen
 ./scripts/build.sh dev   # clone idb, build XCFrameworks
 make build               # build sim-use
 ```
+
+The FB* XCFrameworks are static archives built without library evolution —
+`build_products/` is locked to the toolchain that produced it. Re-run
+`./scripts/build.sh dev` after switching Xcode versions.
 
 ### Daily workflow
 
@@ -41,6 +46,24 @@ swift test --filter TapTests     # run a single test suite
 
 When [xcsift](https://github.com/ldomaradzki/xcsift) is installed (`brew install xcsift` — optional, never required), `make build` / `make test` condense swift output into a TOON summary plus a coverage report. `SIM_USE_XCSIFT=0 make test` forces plain swift output.
 
+### End-to-end tests (live device)
+
+```bash
+make e2e            # BOTH iOS + Android in sequence (needs a booted sim AND an emulator)
+make e2e-ios        # iOS only — booted simulator + Playground fixture
+make e2e-android    # Android only — reachable device/emulator + Playground fixture
+make e2e-matrix     # iOS across Xcode 26/27 × Device Hub closed/open legs (~35 min default)
+make eval           # agent evals (real `claude -p` cost; prompts before running)
+```
+
+E2E suites compile always but skip unless `SIM_USE_E2E=1` (iOS) / `SIM_USE_E2E_ANDROID=1` (Android) is set — `make test` never touches a device, which is why CI needs no simulator. The runners set those vars for you.
+
+**Budget the time: a full green `make e2e-ios` run is ~15 minutes.** The iOS suites drive real HID gestures and wait on simulator animations/keyboard settling, so per-suite waits dominate — this is expected, not a hang. `make e2e` (both platforms) is ~20+ min. When you only touched one platform, run just that platform's target. The runners keep going past a failed suite and print a full pass/fail map at the end, so read the summary rather than assuming the first red aborted the rest.
+
+`make e2e-matrix` validates the host-environment matrix: Xcode 26.x / 27.x × Device Hub closed at boot (`*-sim` legs — the Simulator.app workflow, legacy HID) or open at boot (`*-hub` legs — CoreDevice dtuhidd HID). One leg runs the full suite (default `x27-hub`; `ARGS="--full <leg>|all|none"`), the rest run the smoke tier (`scripts/test-runner.sh --smoke`: describe-ui, tap, type, scroll); legs whose Xcode is missing are skipped. The package builds once on the xcode-select toolchain — each leg only swaps the runtime Xcode via `SIM_USE_TEST_DEVELOPER_DIR` and boots a device matching its iOS generation, with dtuhidd/transport gates before and after the suites so a choreography failure cannot green-run the wrong combination. It quits Device Hub and shuts down every booted simulator, so never run it alongside other simulator work. Per-leg logs + evidence: `.build/e2e-matrix/<timestamp>/`.
+
+Agent-facing behaviour (the bundled skill) has its own natural-language eval layer — see `e2e/agent-evals/README.md` and `docs/ai/xxxx-e2e-confidence-suite/`.
+
 ### Verifying a change
 
 After any non-trivial change, at minimum:
@@ -51,14 +74,17 @@ After any non-trivial change, at minimum:
 
 ## Module layout
 
-Four SwiftPM targets; dependency graph flows in one direction.
+Five SwiftPM targets; dependency graph flows in one direction.
 
 | Target | Path | Depends on |
 |---|---|---|
 | `SimUseCore` | `Sources/SimUseCore/` | Foundation + ArgumentParser |
-| `iOSSimBackend` | `Sources/iOSSimBackend/` | SimUseCore + FB* XCFrameworks + AVFoundation |
-| `AndroidBackend` | `Sources/AndroidBackend/` | SimUseCore + ArgumentParser |
-| `SimUse` (executable) | `Sources/SimUse/` | SimUseCore + iOSSimBackend + AndroidBackend + FB* |
+| `SimUseVideo` | `Sources/SimUseVideo/` | SimUseCore + AVFoundation/ImageIO |
+| `iOSSimBackend` | `Sources/iOSSimBackend/` | SimUseCore + SimUseVideo + FB* XCFrameworks + AVFoundation |
+| `AndroidBackend` | `Sources/AndroidBackend/` | SimUseCore + SimUseVideo + ArgumentParser |
+| `SimUse` (executable) | `Sources/SimUse/` | SimUseCore + SimUseVideo + iOSSimBackend + AndroidBackend + FB* |
+
+`SimUseVideo` holds the platform-neutral host-side video plumbing (H.264 Annex B parsing, passthrough muxing, `AVAssetWriter` encoding, frame utilities) shared by the iOS and Android recording/streaming paths. It must stay FB*-free — anything that needs FBSimulatorControl belongs in `iOSSimBackend` (e.g. the `VideoFrameUtilities.captureScreenshotData` extension), anything adb-shaped in `AndroidBackend`.
 
 ### Verb dispatch
 
@@ -68,7 +94,7 @@ A verb (tap, swipe, type, ...) reaches three surfaces:
 2. **`sim-use ios <verb>`** — `Sources/iOSSimBackend/Verbs/IOSSim<Verb>Command.swift`.
 3. **`sim-use android <verb>`** — `Sources/AndroidBackend/Verbs/Android<Verb>Command.swift`.
 
-Five verbs are iOS-only (`key`, `key-combo`, `key-sequence`, `stream-video`, `batch`) — no top-level alias.
+Four verbs are iOS-only (`key`, `key-combo`, `key-sequence`, `batch`) — no top-level alias.
 
 ### Adding a new verb
 

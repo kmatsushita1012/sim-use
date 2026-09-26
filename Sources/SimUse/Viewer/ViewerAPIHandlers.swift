@@ -29,7 +29,15 @@ struct ViewerAPIHandlers {
 
     func devices(_ request: HTTPRequest) async -> HTTPResponse {
         do {
-            let result = try await run(arguments: ["devices", "--json"])
+            // `--no-physical-ios`: a deliberate product limitation. The
+            // top-level verbs do route physical iOS targets (#115), but
+            // only the accessibility subset (ui / selector tap /
+            // screenshot) — the SPA is built on coordinate taps, frames
+            // and video streaming, none of which that channel carries.
+            // Exclude the rows at the source (also skipping the ~1 s
+            // FBDeviceControl discovery) instead of advertising devices
+            // the Viewer cannot meaningfully operate.
+            let result = try await run(arguments: ["devices", "--json", "--no-physical-ios"])
             let envelope = parseEnvelope(result.stdout)
             if let failure = failureResponse(envelope: envelope, result: result) {
                 return failure
@@ -49,6 +57,7 @@ struct ViewerAPIHandlers {
                 slim["deviceId"] = id
                 slim["name"] = d["name"] ?? ""
                 slim["platform"] = d["platform"] ?? ""
+                slim["kind"] = d["kind"] ?? ""
                 slim["runtime"] = d["runtime"] ?? ""
                 return slim
             }
@@ -70,7 +79,10 @@ struct ViewerAPIHandlers {
             return .json(400, ["ok": false, "error": "deviceId (or udid) query param is required"])
         }
         do {
-            let result = try await run(arguments: ["describe-ui", "--device", deviceId, "--json"], timeout: 30)
+            // `--no-raw`: the snapshot payload only forwards outline /
+            // entries / lists, and this endpoint is polled continuously
+            // during playback — never pay for the raw-tree transfer.
+            let result = try await run(arguments: ["describe-ui", "--device", deviceId, "--json", "--no-raw"], timeout: 30)
             let envelope = parseEnvelope(result.stdout)
             if let failure = failureResponse(envelope: envelope, result: result) {
                 return failure
@@ -80,7 +92,16 @@ struct ViewerAPIHandlers {
             }
             let data = (envelope["data"] as? [String: Any]) ?? [:]
             let outline = data["outline"] as? String
-            let screen = parseScreenFromOutline(outline)
+            var screen = parseScreenFromOutline(outline)
+            // `describe-ui --json` carries the calibrated interface
+            // orientation whenever calibration ran (issue #38); forward
+            // it verbatim rather than parsing the `(landscape-right)`
+            // suffix back out of the outline header. Absent on Android
+            // and legacy daemons — the key is simply omitted then,
+            // matching the CLI envelope semantics.
+            if let orientation = data["orientation"] as? String {
+                screen?["orientation"] = orientation
+            }
             var payload: [String: Any] = [
                 "ok": true,
                 "capturedAt": iso8601Now(),
@@ -270,10 +291,10 @@ struct ViewerAPIHandlers {
 
     private func parseAppLine(_ line: String) -> [String: Any]? {
         // Match `App: <label>  WxH` where W and H are integers and
-        // `<label>` may contain spaces. The label captures lazily so
-        // a label like "Notes Folder" doesn't swallow the trailing
-        // "  WxH".
-        let pattern = #"^App:\s+(.*?)\s+(\d+)x(\d+)\s*$"#
+        // `<label>` may contain spaces. iOS outlines append the current
+        // device orientation when rotated, e.g. ` (landscape-right)`;
+        // accept that suffix while keeping appLabel to the app name.
+        let pattern = #"^App:\s+(.*?)\s+(\d+)x(\d+)(?:\s+\([^)]+\))?\s*$"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
         let range = NSRange(line.startIndex..., in: line)
         guard let match = regex.firstMatch(in: line, range: range),

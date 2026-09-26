@@ -85,9 +85,20 @@ struct CommandRunner {
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = ["-c", command]
 
-        if let environment {
-            process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+        // The E2E matrix runner pins `swift test` to the xcode-select
+        // toolchain (build_products/ is toolchain-locked) and passes the
+        // leg's Xcode via SIM_USE_TEST_DEVELOPER_DIR instead of
+        // DEVELOPER_DIR, which would retrigger a full rebuild. Inject it
+        // here so every spawned process — sim-use and `xcrun simctl`
+        // alike — resolves the leg's Xcode at runtime.
+        var childEnvironment = ProcessInfo.processInfo.environment
+        if let developerDir = childEnvironment["SIM_USE_TEST_DEVELOPER_DIR"], !developerDir.isEmpty {
+            childEnvironment["DEVELOPER_DIR"] = developerDir
         }
+        if let environment {
+            childEnvironment.merge(environment) { _, new in new }
+        }
+        process.environment = childEnvironment
 
         let outputPipe = Pipe()
         let errorPipe = Pipe()
@@ -335,6 +346,10 @@ struct UIStateParser {
 
 // MARK: - Test Helpers
 
+/// Class anchor so `Bundle(for:)` resolves to this test bundle (structs and
+/// enums cannot anchor a bundle lookup).
+private final class BundleLocator {}
+
 struct TestHelpers {
     private static func resolveSwiftBinPath(sourceRoot: String) throws -> String {
         let process = Process()
@@ -380,8 +395,36 @@ struct TestHelpers {
         return udid
     }
 
-    /// Get the path to the sim-use binary using #file to find source root
+    /// Get the path to the sim-use binary, in order of preference:
+    ///
+    /// 1. The SIM_USE_TEST_BINARY environment variable (exported by the E2E
+    ///    runners).
+    /// 2. The products directory containing this test bundle — the binary is
+    ///    built into the same directory on both the classic
+    ///    (`.build/<triple>/debug`) and SwiftBuild
+    ///    (`.build/out/Products/<config>`) layouts.
+    /// 3. Shelling out to `swift build --show-bin-path`. Last resort only:
+    ///    from inside a running `swift test` this deadlocks on
+    ///    SwiftBuild-backend toolchains (Xcode 26.6+/27), where the test run
+    ///    holds the package lock the child invocation then waits on.
     static func getSimUsePath(testFile: String = #file) throws -> String {
+        if let binary = ProcessInfo.processInfo.environment["SIM_USE_TEST_BINARY"],
+           !binary.isEmpty {
+            if FileManager.default.fileExists(atPath: binary) {
+                return binary
+            }
+            throw TestError.unexpectedState(
+                "SIM_USE_TEST_BINARY points at \(binary) but no file exists there.")
+        }
+
+        let bundleSibling = Bundle(for: BundleLocator.self).bundleURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("sim-use")
+            .path
+        if FileManager.default.fileExists(atPath: bundleSibling) {
+            return bundleSibling
+        }
+
         let sourceRoot: String
         if let srcRoot = ProcessInfo.processInfo.environment["SRC_ROOT"] {
             sourceRoot = srcRoot
@@ -397,7 +440,7 @@ struct TestHelpers {
         if FileManager.default.fileExists(atPath: simUsePath) {
             return simUsePath
         }
-        
+
         throw TestError.unexpectedState("sim-use binary not found at \(simUsePath). Please run 'swift build'.")
     }
     
@@ -416,6 +459,21 @@ struct TestHelpers {
         // Launch to specific screen
         _ = try await CommandRunner.run("xcrun simctl launch \(udid) com.cameroncooke.SimUsePlayground --launch-arg \"screen=\(screen)\"")
         try await Task.sleep(nanoseconds: 2_000_000_000)
+
+        // Resilience: a system alert (e.g. a permission prompt left by an
+        // earlier suite) is presented by SpringBoard and survives an app
+        // terminate/relaunch, covering the playground and swallowing every
+        // subsequent gesture. If one is frontmost, dismiss it by tapping the
+        // first alert button (list scope 1) and relaunch once so suites stay
+        // independent regardless of run order.
+        let simUsePath = try getSimUsePath()
+        let (head, _) = try await CommandRunner.run("\(simUsePath) describe-ui --udid \(udid)", allowFailure: true)
+        if head.contains("App: SpringBoard") {
+            _ = try? await CommandRunner.run("\(simUsePath) tap '#1@1' --udid \(udid)", allowFailure: true)
+            try await Task.sleep(nanoseconds: 500_000_000)
+            _ = try await CommandRunner.run("xcrun simctl launch \(udid) com.cameroncooke.SimUsePlayground --launch-arg \"screen=\(screen)\"")
+            try await Task.sleep(nanoseconds: 2_000_000_000)
+        }
     }
     
     static func getUIState(simulatorUDID: String? = nil) async throws -> UIElement {

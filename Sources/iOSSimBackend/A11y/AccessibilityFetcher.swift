@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+import CompanionUtilities
 import FBControlCore
 import FBSimulatorControl
 import Foundation
@@ -25,10 +26,19 @@ public struct AccessibilityFetcher {
     /// Tree (or point-query) payload plus the orientation calibration the
     /// fetch ran under. `calibration` is nil only for surfaces that never
     /// calibrated (legacy shims); a degraded calibration is still present
-    /// with its advisory attached.
+    /// with its advisory attached. `advisory` is non-nil when the tree came
+    /// back as an empty shell and the visible elements were recovered from
+    /// other processes via the remote-content retry (issue #64).
     public struct FetchResult {
         public let data: Data
         public let calibration: OrientationCalibration?
+        public let advisory: CommandAdvisory?
+
+        public init(data: Data, calibration: OrientationCalibration?, advisory: CommandAdvisory? = nil) {
+            self.data = data
+            self.calibration = calibration
+            self.advisory = advisory
+        }
     }
 
     public static func fetchAccessibilityInfoJSONData(
@@ -82,8 +92,7 @@ public struct AccessibilityFetcher {
             // because every probed hit is tagged synthesized and never
             // re-walked into its children anyway. Cuts per-probe XPC cost
             // significantly on WebView-heavy pages.
-            let future = target.accessibilityElement(at: point, nestedFormat: false)
-            let raw: AnyObject = try await FutureBridge.value(future)
+            let raw: AnyObject = try await target.legacyAccessibilityElement(at: point, nestedFormat: false)
             let durationMs = Double(DispatchTime.now().uptimeNanoseconds &- start.uptimeNanoseconds) / 1_000_000
             perf.recordProbe(durationMs: durationMs, phase: "objectAtPoint")
             return raw as? [String: Any]
@@ -100,17 +109,43 @@ public struct AccessibilityFetcher {
             )
         }
 
-        let future = target.accessibilityElements(withNestedFormat: true)
-        let info: AnyObject = try await FutureBridge.value(future)
+        var info: AnyObject = try await target.legacyAccessibilityElements(nestedFormat: true)
         perf.stage("tree fetch XPC")
+
+        // Empty-shell retry (issue #64): a remote-process presentation
+        // (system document picker) leaves the frontmost tree a bare,
+        // frameless AXApplication. Refetch once with upstream's
+        // remote-content discovery so the visible cross-process elements
+        // materialize. The plain first fetch keeps the hot path untouched —
+        // healthy and sparse-but-valid trees never pay for the grid probes.
+        var remoteAdvisory: CommandAdvisory? = nil
+        if isEmptyShellTree(info) {
+            logger.info().log("Frontmost accessibility tree is an empty shell; retrying with remote-content discovery")
+            let samplingScale = native.map { uiScaleFromRawTree(info, native: $0) } ?? .identity
+            if let retried = try? await target.legacyAccessibilityElements(
+                    nestedFormat: true,
+                    includeRemoteContent: true,
+                    remoteSamplingRegion: remoteContentSamplingRegion(native: native, uiScale: samplingScale)),
+               !isEmptyShellTree(retried) {
+                info = retried
+                remoteAdvisory = CommandAdvisory(
+                    kind: .remoteContentRecovery,
+                    message: "The frontmost app exposed an empty accessibility tree; visible elements were recovered from other processes (e.g. a system picker). The hierarchy is flat and may not cover every element — prefer visible labels over structure."
+                )
+            } else {
+                logger.info().log("Remote-content retry did not surface any elements; keeping the original tree")
+            }
+            perf.stage("remote-content retry")
+        }
 
         let calibration = await calibrate(info: info, native: native, probe: probe, logger: logger)
         perf.stage("calibrate")
 
-        // AX frames are UI-space while the hit-test consumes framebuffer
-        // points (issue #34) — cross the boundary here so the quadtree's
-        // UI-space bookkeeping stays untouched. Identity keeps the exact
-        // pre-fix closure.
+        // AX frames are UI-space while the hit-test consumes points on
+        // the native-portrait AXES (issue #34; the metric stays UI —
+        // see `probeCGPoint`) — cross the boundary here so the
+        // quadtree's UI-space bookkeeping stays untouched. Portrait
+        // keeps the exact pre-fix closure.
         let recoveryProbe = calibration.wrappedProbe(probe)
 
         let recovered = try await CollapsedChildrenRecovery.recover(
@@ -128,7 +163,88 @@ public struct AccessibilityFetcher {
         let data = try serializeAccessibilityInfo(recovered)
         perf.stage("serialize")
         perf.finish()
-        return FetchResult(data: data, calibration: calibration)
+        return FetchResult(data: data, calibration: calibration, advisory: remoteAdvisory)
+    }
+
+    /// Whether a fetched tree payload is an "empty shell" warranting the
+    /// remote-content retry (issue #64): no non-application node anywhere
+    /// in it carries a positive-area frame. The frontmost app reports
+    /// exactly this while a remote process (system document picker) owns
+    /// the visible UI — observed live both as a bare `{pid, role}` root
+    /// (0.10.0-era reports) and as a full-screen-framed AXApplication
+    /// with zero children (current runtimes). The application container's
+    /// own frame is just the screen rectangle and proves nothing about
+    /// visible content, so it never vetoes the retry. Unrecognized shapes
+    /// and oversized trees are NOT shells: failing closed keeps the retry
+    /// (and its full-screen probe cost) off every path this predicate
+    /// doesn't positively understand.
+    /// The grid-sampling region for the remote-content retry: the
+    /// hit-test canvas in portrait bounds. Upstream's default region is
+    /// the root element's UI-space frame, but the grid points feed the
+    /// point hit-test, which consumes UI-METRIC points on native-portrait
+    /// AXES (see `NativePortraitSize.uiMetric`) — under rotation a
+    /// UI-space region samples the wrong band (points past the portrait
+    /// width hit nothing; a whole band is never sampled). A full
+    /// portrait-bounds grid covers every visible pixel regardless of
+    /// orientation. On display-downscaled devices those bounds are the
+    /// UI-sized canvas (375x812 on the mini, not pixels/scale): a
+    /// 360x780 grid would never probe the right/bottom ~4% of the
+    /// screen, exactly where a picker's bottom bar tends to live. Nil
+    /// (unknown screen size) falls back to upstream's default region:
+    /// correct in portrait, best-effort elsewhere.
+    nonisolated static func remoteContentSamplingRegion(
+        native: NativePortraitSize?,
+        uiScale: UIPointScale = .identity
+    ) -> CGRect? {
+        native.map { n in
+            let canvas = n.uiMetric(uiScale)
+            return CGRect(x: 0, y: 0, width: canvas.width, height: canvas.height)
+        }
+    }
+
+    /// `UIPointScale` recovered from a raw (possibly shell) tree before
+    /// calibration has run. An empty-shell root still carries its
+    /// full-screen display frame on current runtimes — exactly the UI
+    /// screen size the scale needs. Bare shells (no framed root) yield
+    /// identity, i.e. the pre-scale sampling behaviour.
+    nonisolated static func uiScaleFromRawTree(
+        _ info: AnyObject,
+        native: NativePortraitSize
+    ) -> UIPointScale {
+        let display = rawDisplayFrame(in: rawRoots(of: info))
+        return OrientationCalibrator.uiPointScale(
+            native: native,
+            uiScreenSize: display.map { (width: $0.width, height: $0.height) }
+        )
+    }
+
+    nonisolated static func isEmptyShellTree(_ info: AnyObject) -> Bool {
+        let roots: [[String: Any]]
+        if let array = info as? [[String: Any]] {
+            roots = array
+        } else if let dict = info as? [String: Any] {
+            roots = [dict]
+        } else {
+            return false
+        }
+        var stack = roots
+        var visited = 0
+        while let node = stack.popLast() {
+            visited += 1
+            if visited > 500 {
+                // A tree this large is definitionally not a shell.
+                return false
+            }
+            let isApplication = (node["role"] as? String) == "AXApplication"
+                || (node["type"] as? String) == "Application"
+            if !isApplication, OrientationCalibrator.frameRect(of: node) != nil {
+                return false
+            }
+            if let children = node["children"] as? [[String: Any]] {
+                stack.append(contentsOf: children)
+            }
+        }
+        return true
     }
 
     public static func fetchAccessibilityElements(
@@ -162,13 +278,29 @@ public struct AccessibilityFetcher {
     // MARK: - Point query (UI-space semantics)
 
     /// `--point` coordinates are UI space — the space every printed frame
-    /// uses. The hit-test XPC consumes framebuffer points, so a rotated
-    /// device needs the query transformed. The first probe doubles as
+    /// uses. The hit-test XPC consumes points on native-portrait axes,
+    /// so a rotated device needs the query transformed. The first probe doubles as
     /// calibration evidence: its returned frame settles the orientation
     /// only when exactly one candidate maps the probe point into it. Any
     /// tie (a fat frame containing several projections proves nothing)
     /// falls through to a full tree calibration — giving portrait the tie
     /// would return the wrong element on rotated devices.
+    ///
+    /// The hit-test consumes UI-METRIC points on native-portrait axes
+    /// (verified live on a display-downscaled iPhone 12 mini — see
+    /// `NativePortraitSize.uiMetric`), so in portrait the identity probe
+    /// queries the exact requested point on every device, downscaled or
+    /// not, and the fast path stays single-probe. Only the HID dispatch
+    /// side of a calibration carries the `UIPointScale`.
+    ///
+    /// One deliberate gap: the fast path's bounds gate below compares
+    /// against the native (pixels/scale) portrait size, because no scale
+    /// is known before a tree is fetched. On a downscaled panel, points
+    /// in the UI-only edge bands (x in 360..<375, y in 780..<812 on the
+    /// mini) skip the identity probe and take the tree-calibration
+    /// fallback — same result, one tree fetch slower. Widening the gate
+    /// would not help: `soleOrientation` clamps its projections to the
+    /// native canvas, so a probe out there could never settle anything.
     private static func pointQuery(
         target: FBSimulator,
         point: AccessibilityPoint,
@@ -178,8 +310,7 @@ public struct AccessibilityFetcher {
         perf: PerfLog
     ) async throws -> FetchResult {
         func nestedQuery(_ p: CGPoint) async throws -> AnyObject {
-            let future = target.accessibilityElement(at: p, nestedFormat: true)
-            return try await FutureBridge.value(future)
+            try await target.legacyAccessibilityElement(at: p, nestedFormat: true)
         }
 
         guard let native else {
@@ -212,8 +343,7 @@ public struct AccessibilityFetcher {
         // tree calibration below settles which landscape.
 
         if orientation == nil {
-            let future = target.accessibilityElements(withNestedFormat: true)
-            if let info: AnyObject = try? await FutureBridge.value(future) {
+            if let info: AnyObject = try? await target.legacyAccessibilityElements(nestedFormat: true) {
                 perf.stage("tree fetch XPC (point calibration)")
                 let treeCalibration = await calibrate(info: info, native: native, probe: probe, logger: logger)
                 calibration = treeCalibration
@@ -239,16 +369,49 @@ public struct AccessibilityFetcher {
         )
 
         let info: AnyObject
+        // The hit-test consumes UI-METRIC points on native-portrait
+        // axes, so the portrait probe transform is the identity even on
+        // display-downscaled devices — the identity probe already
+        // queried the right point and its result is reusable. Rotated
+        // devices re-issue through `probeCGPoint` (axes only, never the
+        // HID metric scale).
         if resolved == .portrait, let identityResult {
             info = identityResult
         } else {
-            info = try await nestedQuery(finalCalibration.hidCGPoint(point.cgPoint))
+            info = try await nestedQuery(finalCalibration.probeCGPoint(point.cgPoint))
             perf.stage("point XPC (transformed)")
         }
         let data = try serializeAccessibilityInfo(info)
         perf.stage("serialize")
         perf.finish()
         return FetchResult(data: data, calibration: finalCalibration)
+    }
+
+    /// Orientation calibration WITHOUT the collapsed-children recovery
+    /// walk — for verbs that need the current orientation but not the
+    /// tree itself (directional gesture presets, issue #66). Costs one
+    /// tree-fetch XPC plus at most `OrientationCalibrator.defaultMaxProbes`
+    /// hit-test probes; recovery's quadtree probing (up to hundreds of
+    /// XPC round-trips on WebView-heavy screens) is skipped entirely.
+    public static func fetchOrientationCalibration(
+        for simulatorUDID: String,
+        logger: SimUseLogger
+    ) async throws -> OrientationCalibration {
+        let simulatorSet = try await getSimulatorSet(
+            deviceSetPath: nil,
+            logger: logger,
+            reporter: EmptyEventReporter.shared
+        )
+        guard let target = simulatorSet.allSimulators.first(where: { $0.udid == simulatorUDID }) else {
+            throw CLIError(errorDescription: "Simulator with UDID \(simulatorUDID) not found in set.")
+        }
+        let native = NativePortraitSize(screenInfo: target.screenInfo)
+        let probe: CollapsedChildrenRecovery.PointProbe = { point in
+            let raw: AnyObject = try await target.legacyAccessibilityElement(at: point, nestedFormat: false)
+            return raw as? [String: Any]
+        }
+        let info: AnyObject = try await target.legacyAccessibilityElements(nestedFormat: true)
+        return await calibrate(info: info, native: native, probe: probe, logger: logger)
     }
 
     // MARK: - Calibration over the raw tree payload
@@ -270,7 +433,7 @@ public struct AccessibilityFetcher {
         )
     }
 
-    private static func rawRoots(of info: AnyObject) -> [[String: Any]] {
+    private nonisolated static func rawRoots(of info: AnyObject) -> [[String: Any]] {
         if let array = info as? [[String: Any]] { return array }
         if let dict = info as? [String: Any] { return [dict] }
         return []
@@ -279,7 +442,7 @@ public struct AccessibilityFetcher {
     /// Raw-payload mirror of `AXDisplayFrame.frame(in:)`: the largest
     /// positive-area Application-typed root, falling back to the largest
     /// root of any type.
-    private static func rawDisplayFrame(in roots: [[String: Any]]) -> CGRect? {
+    private nonisolated static func rawDisplayFrame(in roots: [[String: Any]]) -> CGRect? {
         let usable = roots.compactMap { root -> (isApplication: Bool, rect: CGRect)? in
             guard let rect = OrientationCalibrator.frameRect(of: root) else { return nil }
             let type = root["type"] as? String

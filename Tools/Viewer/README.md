@@ -38,7 +38,7 @@ make viewer        # or: scripts/build-viewer.sh
 ## API endpoints
 
 - `GET /api/devices` — list booted simulators and connected Android devices.
-- `GET /api/snapshot?deviceId=<DEVICE_ID>` — `sim-use ui --json` → `{ screen, entries, outline, capturedAt }`. `udid=` is still accepted as a deprecated alias.
+- `GET /api/snapshot?deviceId=<DEVICE_ID>` — `sim-use ui --json` → `{ screen, entries, outline, capturedAt }`. `screen.orientation` carries the CLI's calibrated interface orientation (`portrait`, `landscape-right`, …) and is omitted when the CLI reports none (Android). `udid=` is still accepted as a deprecated alias.
 - `POST /api/tap` — replay `sim-use tap @N` on the selected element.
 
 ## Controls

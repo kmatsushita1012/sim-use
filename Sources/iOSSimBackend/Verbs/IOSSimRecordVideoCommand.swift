@@ -1,44 +1,59 @@
 // SPDX-License-Identifier: Apache-2.0
 import ArgumentParser
 import Foundation
+import CompanionUtilities
 import FBSimulatorControl
 @preconcurrency import FBControlCore
 import AVFoundation
 import SimUseCore
+import SimUseVideo
 
-/// iOS Simulator backend for the `record-video` verb. The top-level
-/// cross-platform `record-video` forwards iOS UDIDs through here; the
-/// Android branch keeps its execute body inline in the forwarder
-/// because it cross-cuts AndroidBackend (for `Adb`) and iOSSimBackend
-/// (for `H264StreamRecorder` / `VideoFrameUtilities`). Only SimUse —
-/// the executable target — depends on both, so AndroidBackend cannot
-/// host the Android record-video orchestrator without dragging
-/// iOSSimBackend into its dep cone.
+/// iOS Simulator backend for the `record-video` verb. Recording uses idb's
+/// native in-process file recorder (`FBSimulator.startRecording(toFile:
+/// configuration:)`), which drives `FBSimulatorVideoStream` in eager
+/// (fixed-rate) H.264 mode and muxes straight into an `.mp4` via its own
+/// `AVAssetWriter`-backed file writer — the same passthrough-muxing
+/// architecture this command used to hand-roll, now upstream's own
+/// maintained implementation. `--fps` maps directly to the stream's eager
+/// cadence, so the requested rate is honored and playback is smooth.
 public struct IOSSimRecordVideoCommand: SimUseExecutableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "record-video",
-        abstract: "Record the iOS Simulator display to an MP4 file using H.264 encoding"
+        abstract: "Record the iOS Simulator display to an MP4 (H.264) or animated GIF file"
     )
 
-    public struct ExecutionResult: Codable, Sendable {
+    public struct ExecutionResult: Codable {
         public let path: String
         public init(path: String) {
             self.path = path
         }
     }
 
+    /// Raised only when idb's native recorder cannot be set up (private
+    /// CoreSimulator API unavailable, recording fails to start). Triggers the
+    /// screenshot-capture fallback; mid-recording failures propagate as-is.
+    private struct RecordingUnavailableError: Error {
+        let underlying: String
+    }
+
     @OptionGroup public var device: DeviceOptions
 
-    @Option(help: "Frames per second (1-30, default: 10)")
-    public var fps: Int = 10
+    @Option(help: "Frames per second (1-60; default: 30 for mp4, 10 for gif).")
+    public var fps: Int?
 
     @Option(help: "Quality factor (1-100) controlling bitrate (default: 80)")
     public var quality: Int = 80
 
-    @Option(help: "Scale factor (0.1-1.0, default: 1.0)")
-    public var scale: Double = 1.0
+    @Option(help: "Scale factor (0.1-1.0; default: 1.0 for mp4, 0.5 for gif)")
+    public var scale: Double?
 
-    @Option(help: "Output MP4 file path. Defaults to sim-use-video-<timestamp>.mp4 in the current directory.")
+    @Option(help: "Output format: mp4, gif. Defaults to the --output extension when recognized, else mp4.")
+    public var format: RecordingFormat?
+
+    @Flag(help: "Bracket a GIF with START/END marker frames (opt-in; ignored for mp4).")
+    public var gifMarkers: Bool = false
+
+    @Option(help: "Output file path. Defaults to sim-use-video-<timestamp>.<format> in the current directory.")
     public var output: String?
 
     @OptionGroup public var json: JSONOutputOptions
@@ -63,19 +78,7 @@ public struct IOSSimRecordVideoCommand: SimUseExecutableCommand {
     }
 
     public func validate() throws {
-        try Self.validateOptions(fps: fps, quality: quality, scale: scale)
-    }
-
-    public static func validateOptions(fps: Int, quality: Int, scale: Double) throws {
-        guard fps >= 1 && fps <= 30 else {
-            throw ValidationError("FPS must be between 1 and 30")
-        }
-        guard quality >= 1 && quality <= 100 else {
-            throw ValidationError("Quality must be between 1 and 100")
-        }
-        guard scale >= 0.1 && scale <= 1.0 else {
-            throw ValidationError("Scale must be between 0.1 and 1.0")
-        }
+        try VideoRecordingOptions.validate(fps: fps, quality: quality, scale: scale)
     }
 
     public func execute() async throws -> ExecutionResult {
@@ -98,8 +101,12 @@ public struct IOSSimRecordVideoCommand: SimUseExecutableCommand {
             throw CLIError(errorDescription: "Simulator \(trimmedUDID) is not booted. Current state: \(stateDescription)")
         }
 
-        let outputURL = try Self.prepareOutputURL(output: output)
-        FileHandle.standardError.write(Data("Recording simulator \(targetSimulator.udid) to \(outputURL.path)\n".utf8))
+        // GIF is transcoded from a finished MP4 (see GIFTranscoder); the
+        // capture loop itself always writes H.264, to plan.recordTarget.
+        let plan = try RecordingOutputPlan(format: format, output: output, fps: fps, scale: scale, gifMarkers: gifMarkers)
+        let options = plan.options
+        let recordTarget = plan.recordTarget
+        FileHandle.standardError.write(Data("Recording simulator \(targetSimulator.udid) to \(plan.outputURL.path)\n".utf8))
         FileHandle.standardError.write(Data("Press Ctrl+C to stop recording\n".utf8))
 
         let cancellationFlag = CancellationFlag()
@@ -111,23 +118,96 @@ public struct IOSSimRecordVideoCommand: SimUseExecutableCommand {
         defer { signalObserver.invalidate() }
 
         do {
-            try await recordVideo(
+            try await recordVideoViaNativeRecording(
                 simulator: targetSimulator,
-                outputURL: outputURL,
-                fps: fps,
+                outputURL: recordTarget,
+                fps: options.fps ?? 30,
                 quality: quality,
-                scale: scale,
+                scale: options.scale,
                 cancellationFlag: cancellationFlag
             )
             recordingFinished.cancel()
-            return ExecutionResult(path: outputURL.path)
+        } catch let unavailable as RecordingUnavailableError {
+            FileHandle.standardError.write(Data("warning: native H.264 recording unavailable (\(unavailable.underlying)); falling back to screenshot capture\n".utf8))
+            do {
+                try await recordVideoViaScreenshots(
+                    simulator: targetSimulator,
+                    outputURL: recordTarget,
+                    fps: options.fps ?? 10,
+                    quality: quality,
+                    scale: options.scale,
+                    cancellationFlag: cancellationFlag
+                )
+                recordingFinished.cancel()
+            } catch {
+                recordingFinished.cancel()
+                throw CLIError(errorDescription: "Failed to record video: \(error.localizedDescription)")
+            }
         } catch {
             recordingFinished.cancel()
             throw CLIError(errorDescription: "Failed to record video: \(error.localizedDescription)")
         }
+
+        // Tear the observer down before the transcode so Ctrl+C during a
+        // long GIF encode kills the process instead of being swallowed by
+        // a handler that has nothing left to cancel (invalidate is
+        // idempotent; the defer covers the error paths above).
+        signalObserver.invalidate()
+        try await plan.finalizeRecording()
+        return ExecutionResult(path: plan.outputURL.path)
     }
 
-    private func recordVideo(
+    // MARK: - H.264 native recording
+
+    private func recordVideoViaNativeRecording(
+        simulator: FBSimulator,
+        outputURL: URL,
+        fps: Int,
+        quality: Int,
+        scale: Double,
+        cancellationFlag: CancellationFlag
+    ) async throws {
+        let config = FBVideoStreamConfiguration(
+            format: .compressedVideo(withCodec: .h264, transport: .annexB),
+            framesPerSecond: fps,
+            rateControl: .quality(Double(quality) / 100.0),
+            scaleFactor: scale,
+            keyFrameRate: 2.0
+        )
+
+        let recording: any FBVideoRecording
+        do {
+            recording = try await simulator.startRecording(toFile: outputURL.path, configuration: config)
+        } catch {
+            throw RecordingUnavailableError(underlying: error.localizedDescription)
+        }
+
+        while !(Task.isCancelled || cancellationFlag.isCancelled()) {
+            try? await cancellableSleep(seconds: 0.1, flag: cancellationFlag)
+        }
+
+        do {
+            _ = try await recording.stop()
+        } catch {
+            // Whether a usable file survived a mid-recording failure is not
+            // knowable from here (idb owns finalization internally) — check
+            // the filesystem directly rather than guessing, matching the
+            // Android branch's "partial recording saved" wording so the
+            // caller doesn't discard a usable recording on faith alone.
+            if FileManager.default.fileExists(atPath: outputURL.path) {
+                throw CLIError(errorDescription: "\(error.localizedDescription); partial recording saved to \(outputURL.path)")
+            }
+            throw error
+        }
+    }
+
+    // MARK: - Screenshot fallback
+
+    /// Last-resort recorder used only when the H.264 stream API is
+    /// unavailable (e.g. after an Xcode update breaks the private
+    /// CoreSimulator surface). Polls screenshots and re-encodes through
+    /// `H264StreamRecorder`; caps near ~8-10 fps.
+    private func recordVideoViaScreenshots(
         simulator: FBSimulator,
         outputURL: URL,
         fps: Int,
@@ -150,54 +230,27 @@ public struct IOSSimRecordVideoCommand: SimUseExecutableCommand {
         )
         defer { recorder.invalidate() }
 
-        let frameInterval = 1.0 / Double(fps)
-        var frameCount: Int64 = 1
-        var lastLogFrame: Int64 = 0
-        let startTime = Date()
         var lastPresentationTime = CMTime.zero
-
+        let frameInterval = 1.0 / Double(fps)
         try recorder.append(image: initialImage, presentationTime: .zero)
         let writerStartTime = Date()
 
         while true {
-            if Task.isCancelled {
-                break
-            }
-            if cancellationFlag.isCancelled() {
-                break
-            }
-
+            if Task.isCancelled || cancellationFlag.isCancelled() { break }
             let frameStart = Date()
 
             do {
                 let frameData = try await VideoFrameUtilities.captureScreenshotData(from: simulator)
-                // A decode failure must still fall through to the
-                // frame-pacing sleep below — `continue` here would
-                // hot-spin the loop for as long as decoding keeps
-                // failing.
                 if let cgImage = VideoFrameUtilities.makeCGImage(from: frameData) {
                     let now = Date()
                     var presentationTime = CMTime(seconds: now.timeIntervalSince(writerStartTime), preferredTimescale: 600)
                     if presentationTime <= lastPresentationTime {
                         presentationTime = CMTimeAdd(lastPresentationTime, CMTime(value: 1, timescale: 600))
                     }
-
                     try recorder.append(image: cgImage, presentationTime: presentationTime)
                     lastPresentationTime = presentationTime
-                    frameCount += 1
-
-                    if frameCount - lastLogFrame >= Int64(fps) {
-                        lastLogFrame = frameCount
-                        let elapsed = Date().timeIntervalSince(startTime)
-                        let actualFPS = Double(frameCount) / max(elapsed, 0.0001)
-                        FileHandle.standardError.write(Data(String(format: "Captured %lld frames (%.1f FPS actual)\n", frameCount, actualFPS).utf8))
-                    }
-                } else {
-                    FileHandle.standardError.write(Data("Unable to decode screenshot frame\n".utf8))
                 }
             } catch let error as VideoWriterStallError {
-                // A stalled writer does not recover; abort the recording
-                // instead of re-logging the stall once per timeout forever.
                 throw error
             } catch {
                 FileHandle.standardError.write(Data("Error capturing frame: \(error.localizedDescription)\n".utf8))
@@ -211,55 +264,5 @@ public struct IOSSimRecordVideoCommand: SimUseExecutableCommand {
         }
 
         try await recorder.finish()
-    }
-
-    /// Resolve the user-supplied `--output` argument into a concrete
-    /// MP4 file URL. Public so the cross-platform forwarder's Android
-    /// branch can reuse the same path semantics.
-    public static func prepareOutputURL(output: String?) throws -> URL {
-        let fileManager = FileManager.default
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-
-        let providedPath = output?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedPath: String
-        if let providedPath, !providedPath.isEmpty {
-            resolvedPath = (providedPath as NSString).expandingTildeInPath
-        } else {
-            resolvedPath = "sim-use-video-\(formatter.string(from: Date())).mp4"
-        }
-
-        let baseURL: URL
-        if resolvedPath.hasPrefix("/") {
-            baseURL = URL(fileURLWithPath: resolvedPath)
-        } else {
-            baseURL = URL(fileURLWithPath: fileManager.currentDirectoryPath).appendingPathComponent(resolvedPath)
-        }
-
-        var isDirectory: ObjCBool = false
-        if fileManager.fileExists(atPath: baseURL.path, isDirectory: &isDirectory), isDirectory.boolValue {
-            let filename = "sim-use-video-\(formatter.string(from: Date())).mp4"
-            let directoryURL = baseURL
-            if !fileManager.fileExists(atPath: directoryURL.path) {
-                try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true, attributes: nil)
-            }
-            return directoryURL.appendingPathComponent(filename)
-        }
-
-        let directoryURL = baseURL.deletingLastPathComponent()
-        if !fileManager.fileExists(atPath: directoryURL.path) {
-            try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true, attributes: nil)
-        }
-
-        if fileManager.fileExists(atPath: baseURL.path) {
-            var existingIsDirectory: ObjCBool = false
-            fileManager.fileExists(atPath: baseURL.path, isDirectory: &existingIsDirectory)
-            if existingIsDirectory.boolValue {
-                throw CLIError(errorDescription: "Output path \(baseURL.path) is a directory. Provide a file name or point to a different location.")
-            }
-            try fileManager.removeItem(at: baseURL)
-        }
-
-        return baseURL
     }
 }

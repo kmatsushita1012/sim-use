@@ -24,17 +24,24 @@ struct ViewerAPIHandlersTests {
     /// Writes an executable `/bin/sh` script that prints the given
     /// stdout/stderr and exits with `exitCode`, then returns handlers
     /// pointed at it. The script lives in a per-test temp directory
-    /// cleaned up by the returned closure.
+    /// cleaned up by the returned closure. With `recordArgs`, the
+    /// script first writes the argv it was spawned with to
+    /// `<script>.args` (see `recordedArgs(of:)`) so tests can assert
+    /// on the exact command line the handler built.
     private func makeHandlers(
         stdout: String,
         stderr: String = "",
-        exitCode: Int32
+        exitCode: Int32,
+        recordArgs: Bool = false
     ) throws -> (handlers: ViewerAPIHandlers, cleanup: () -> Void) {
         let suffix = String(UUID().uuidString.prefix(6))
         let dir = URL(fileURLWithPath: "/tmp/sim-use-viewer-\(suffix)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let script = dir.appendingPathComponent("fake-sim-use")
         var lines = ["#!/bin/sh"]
+        if recordArgs {
+            lines.append("echo \"$@\" > \"$0.args\"")
+        }
         // Heredocs keep the JSON fixtures verbatim — no shell quoting
         // pitfalls around the double quotes inside the envelopes.
         if !stdout.isEmpty {
@@ -57,6 +64,15 @@ struct ViewerAPIHandlersTests {
             ViewerAPIHandlers(executable: script),
             { try? FileManager.default.removeItem(at: dir) }
         )
+    }
+
+    /// The argv recorded by a `makeHandlers(recordArgs: true)` script,
+    /// whitespace-trimmed.
+    private func recordedArgs(of handlers: ViewerAPIHandlers) throws -> String {
+        try String(
+            contentsOf: URL(fileURLWithPath: handlers.executable.path + ".args"),
+            encoding: .utf8
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func getRequest(query: [String: String] = [:]) -> HTTPRequest {
@@ -181,7 +197,7 @@ struct ViewerAPIHandlersTests {
 
     @Test("devices: zero exit with ok:true envelope returns 200 with devices")
     func devicesSuccess() async throws {
-        let envelope = #"{"ok":true,"data":{"devices":[{"deviceId":"ABC","name":"iPhone","platform":"ios","runtime":"iOS 18.0"}]}}"#
+        let envelope = #"{"ok":true,"data":{"devices":[{"deviceId":"ABC","name":"iPhone","platform":"ios","kind":"simulator","runtime":"iOS 18.0"}]}}"#
         let (handlers, cleanup) = try makeHandlers(stdout: envelope, exitCode: 0)
         defer { cleanup() }
         let response = await handlers.devices(getRequest())
@@ -191,5 +207,84 @@ struct ViewerAPIHandlersTests {
         let devices = try #require(body["devices"] as? [[String: Any]])
         #expect(devices.count == 1)
         #expect(devices.first?["deviceId"] as? String == "ABC")
+        #expect(devices.first?["kind"] as? String == "simulator")
+    }
+
+    @Test("devices: excludes physical iOS at the source and forwards kind")
+    func devicesExcludesPhysicalIOSAtSource() async throws {
+        // The Viewer drives devices through the top-level verbs, which
+        // don't accept physical iOS targets — so the handler must pass
+        // --no-physical-ios (excluding them at the source, and skipping
+        // the ~1 s FBDeviceControl discovery) rather than advertising
+        // rows the SPA cannot operate. Android physical remains listed
+        // and operable; `kind` lets the SPA tell it from an emulator.
+        let envelope = #"{"ok":true,"data":{"devices":[{"deviceId":"R5CT1ABCD12","name":"Pixel 8","platform":"android","kind":"physical","runtime":"Android"}]}}"#
+        let (handlers, cleanup) = try makeHandlers(stdout: envelope, exitCode: 0, recordArgs: true)
+        defer { cleanup() }
+
+        let response = await handlers.devices(getRequest())
+        #expect(response.status == 200)
+        #expect(try recordedArgs(of: handlers) == "devices --json --no-physical-ios")
+
+        let body = try jsonBody(response)
+        let devices = try #require(body["devices"] as? [[String: Any]])
+        #expect(devices.first?["kind"] as? String == "physical")
+        #expect(devices.first?["platform"] as? String == "android")
+    }
+
+    @Test("snapshot: spawns describe-ui with --json --no-raw")
+    func snapshotSpawnsNoRaw() async throws {
+        let envelope = """
+        {"ok":true,"data":{"platform":"ios","outline":"App: SampleApp  402x874\\n","entries":[],"lists":[]}}
+        """
+        let (handlers, cleanup) = try makeHandlers(stdout: envelope, exitCode: 0, recordArgs: true)
+        defer { cleanup() }
+
+        let response = await handlers.snapshot(getRequest(query: ["deviceId": "TEST-UDID"]))
+
+        #expect(response.status == 200)
+        #expect(try recordedArgs(of: handlers) == "describe-ui --device TEST-UDID --json --no-raw")
+    }
+
+    @Test("snapshot: rotated iOS outline still carries screen dimensions")
+    func snapshotParsesRotatedScreenLine() async throws {
+        let envelope = """
+        {"ok":true,"data":{"platform":"ios","outline":"App: SampleApp  874x402  (landscape-right)\\n\\n[Top  y<120]\\n","entries":[],"lists":[]}}
+        """
+        let (handlers, cleanup) = try makeHandlers(stdout: envelope, exitCode: 0)
+        defer { cleanup() }
+
+        let response = await handlers.snapshot(getRequest(query: ["deviceId": "TEST-UDID"]))
+
+        #expect(response.status == 200)
+        let body = try jsonBody(response)
+        #expect(body["ok"] as? Bool == true)
+        let screen = try #require(body["screen"] as? [String: Any])
+        #expect(screen["appLabel"] as? String == "SampleApp")
+        #expect(screen["width"] as? Int == 874)
+        #expect(screen["height"] as? Int == 402)
+        // No `data.orientation` in the envelope → no `orientation`
+        // key in the screen payload (issue #57).
+        #expect(screen["orientation"] == nil)
+    }
+
+    @Test("snapshot: forwards data.orientation into the screen payload")
+    func snapshotForwardsOrientation() async throws {
+        let envelope = """
+        {"ok":true,"data":{"platform":"ios","orientation":"landscape-right","outline":"App: SampleApp  874x402  (landscape-right)\\n\\n[Top  y<120]\\n","entries":[],"lists":[]}}
+        """
+        let (handlers, cleanup) = try makeHandlers(stdout: envelope, exitCode: 0)
+        defer { cleanup() }
+
+        let response = await handlers.snapshot(getRequest(query: ["deviceId": "TEST-UDID"]))
+
+        #expect(response.status == 200)
+        let body = try jsonBody(response)
+        let screen = try #require(body["screen"] as? [String: Any])
+        #expect(screen["orientation"] as? String == "landscape-right")
+        // The rest of the screen payload is unaffected.
+        #expect(screen["appLabel"] as? String == "SampleApp")
+        #expect(screen["width"] as? Int == 874)
+        #expect(screen["height"] as? Int == 402)
     }
 }

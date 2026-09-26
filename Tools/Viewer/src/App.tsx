@@ -322,7 +322,14 @@ export default function App() {
           )}
           {snapshot?.screen && (
             <span>
-              {snapshot.screen.width}×{snapshot.screen.height} ·{" "}
+              {snapshot.screen.width}×{snapshot.screen.height}
+              {/* Mirror the outline header: portrait is the default
+                  and earns no tag, only a rotated screen shows one. */}
+              {snapshot.screen.orientation &&
+                snapshot.screen.orientation !== "portrait" && (
+                  <> ({snapshot.screen.orientation})</>
+                )}{" "}
+              ·{" "}
               {matchIds
                 ? `${matchIds.size} / ${snapshot.entries.length} match`
                 : `${snapshot.entries.length} elements`}

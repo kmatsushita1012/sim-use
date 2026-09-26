@@ -114,6 +114,7 @@ public enum SimctlDeviceLister {
                     udid: raw.udid,
                     name: raw.name,
                     platform: .ios,
+                    kind: .simulator,
                     state: raw.state,
                     runtime: runtime
                 ))

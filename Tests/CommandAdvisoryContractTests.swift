@@ -35,6 +35,45 @@ struct CommandAdvisoryContractTests {
         #expect(decoded.y == 20)
     }
 
+    @Test("swipe result encodes without the advisory and decodes it as nil")
+    func swipeResult() throws {
+        let coords = SwipeCoordinates(startX: 1, startY: 2, endX: 3, endY: 4)
+        let result = IOSSimSwipeCommand.ExecutionResult(coordinates: coords, commandAdvisory: contractAdvisory)
+        #expect(result.commandAdvisory == contractAdvisory)
+
+        let json = try encodedJSON(result)
+        #expect(!json.contains("advisory"))
+        #expect(json.contains(#""startX":1"#))
+
+        let decoded = try JSONDecoder().decode(IOSSimSwipeCommand.ExecutionResult.self, from: Data(json.utf8))
+        #expect(decoded.commandAdvisory == nil)
+        #expect(decoded.coordinates.endY == 4)
+    }
+
+    @Test("touch result encodes without the advisory and decodes it as nil")
+    func touchResult() throws {
+        let result = IOSSimTouchCommand.ExecutionResult(commandAdvisory: contractAdvisory)
+        #expect(result.commandAdvisory == contractAdvisory)
+
+        let json = try encodedJSON(result)
+        #expect(json == #"{}"#)
+
+        let decoded = try JSONDecoder().decode(IOSSimTouchCommand.ExecutionResult.self, from: Data(json.utf8))
+        #expect(decoded.commandAdvisory == nil)
+    }
+
+    @Test("gesture result encodes without the advisory and decodes it as nil")
+    func gestureResult() throws {
+        let result = IOSSimGestureCommand.ExecutionResult(commandAdvisory: contractAdvisory)
+        #expect(result.commandAdvisory == contractAdvisory)
+
+        let json = try encodedJSON(result)
+        #expect(json == #"{}"#)
+
+        let decoded = try JSONDecoder().decode(IOSSimGestureCommand.ExecutionResult.self, from: Data(json.utf8))
+        #expect(decoded.commandAdvisory == nil)
+    }
+
     @Test("batch result encodes without the advisory and decodes it as nil")
     func batchResult() throws {
         let result = IOSSimBatchCommand.ExecutionResult(stepsExecuted: 3, commandAdvisory: contractAdvisory)

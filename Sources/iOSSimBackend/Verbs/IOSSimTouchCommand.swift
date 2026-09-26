@@ -15,8 +15,16 @@ import SimUseCore
 /// open across other commands). The split form has no Android peer —
 /// the cross-platform forwarder rejects it on Android.
 public struct IOSSimTouchCommand: SimUseExecutableCommand {
-    public struct ExecutionResult: Codable, Sendable {
-        public init() {}
+    public struct ExecutionResult: Codable, CommandAdvisoryProviding {
+        /// Excluded from the encoded `data` payload via `CodingKeys`
+        /// — the envelope hoists it to the top-level `advisory` key.
+        public var commandAdvisory: CommandAdvisory? = nil
+
+        public init(commandAdvisory: CommandAdvisory? = nil) {
+            self.commandAdvisory = commandAdvisory
+        }
+
+        private enum CodingKeys: CodingKey {}
     }
 
     public static let configuration = CommandConfiguration(
@@ -51,6 +59,9 @@ public struct IOSSimTouchCommand: SimUseExecutableCommand {
     @Option(name: .customLong("delay"), help: "Delay between touch down and up events in seconds (if both are specified).")
     public var delay: Double?
 
+    @Option(name: .customLong("coordinate-space"), help: "Space the coordinates are given in: 'native' (device-native portrait, the default) or 'ui' (visual space as printed by describe-ui; orientation-calibrated). 'ui' requires the atomic --down --up form — the split form could straddle a rotation and land the two halves in different spaces.")
+    public var coordinateSpace: CoordinateSpace = .native
+
     @OptionGroup public var device: DeviceOptions
 
     @OptionGroup public var json: JSONOutputOptions
@@ -72,7 +83,8 @@ public struct IOSSimTouchCommand: SimUseExecutableCommand {
             pointX: pointX, pointY: pointY,
             touchDown: touchDown,
             touchUp: touchUp,
-            delay: delay
+            delay: delay,
+            coordinateSpace: coordinateSpace
         )
     }
 
@@ -84,7 +96,8 @@ public struct IOSSimTouchCommand: SimUseExecutableCommand {
         pointY: Double,
         touchDown: Bool,
         touchUp: Bool,
-        delay: Double?
+        delay: Double?,
+        coordinateSpace: CoordinateSpace = .native
     ) throws {
         guard pointX >= 0, pointY >= 0 else {
             throw ValidationError("Coordinates must be non-negative values.")
@@ -92,6 +105,16 @@ public struct IOSSimTouchCommand: SimUseExecutableCommand {
 
         guard touchDown || touchUp else {
             throw ValidationError("At least one of --down or --up must be specified.")
+        }
+
+        // A split touch (--down and --up in separate invocations) can
+        // straddle a rotation: the two halves would calibrate
+        // independently and land in different spaces. Restrict ui
+        // coordinates to the atomic form.
+        if coordinateSpace == .ui {
+            guard touchDown && touchUp else {
+                throw ValidationError("--coordinate-space ui requires the atomic --down --up form. Use native coordinates for split touches.")
+            }
         }
 
         if let delay {
@@ -114,6 +137,23 @@ public struct IOSSimTouchCommand: SimUseExecutableCommand {
 
         logger.info().log("Performing touch events at (\(pointX), \(pointY))")
 
+        // ui space is atomic-form-only (validated above), so a single
+        // calibration covers both halves of the touch.
+        var advisory: CommandAdvisory? = nil
+        let point: (x: Double, y: Double)
+        if coordinateSpace == .ui {
+            let calibration = await UISpaceCalibrationLoader.load(
+                udid: device.resolved,
+                fallbackMessage: "Screen orientation could not be determined; --coordinate-space ui coordinates were dispatched as device-native portrait and may be wrong if the device is rotated.",
+                logger: logger
+            )
+            advisory = calibration.advisory
+            point = calibration.hidPoint(x: pointX, y: pointY)
+            logger.info().log("Coordinates (HID space): (\(point.x), \(point.y))")
+        } else {
+            point = (pointX, pointY)
+        }
+
         if touchDown && touchUp {
             // Send down and up as separate HID submissions so iOS
             // recognizers observe a real hold duration for long-press
@@ -122,7 +162,7 @@ public struct IOSSimTouchCommand: SimUseExecutableCommand {
 
             logger.info().log("Touch down")
             try await HIDInteractor.performHIDEvent(
-                FBSimulatorHIDEvent.touchDownAt(x: pointX, y: pointY),
+                FBSimulatorHIDEvent.touch(direction: .down, x: point.x, y: point.y),
                 for: device.resolved,
                 logger: logger
             )
@@ -134,27 +174,27 @@ public struct IOSSimTouchCommand: SimUseExecutableCommand {
 
             logger.info().log("Touch up")
             try await HIDInteractor.performHIDEvent(
-                FBSimulatorHIDEvent.touchUpAt(x: pointX, y: pointY),
+                FBSimulatorHIDEvent.touch(direction: .up, x: point.x, y: point.y),
                 for: device.resolved,
                 logger: logger
             )
         } else if touchDown {
             logger.info().log("Touch down")
             try await HIDInteractor.performHIDEvent(
-                FBSimulatorHIDEvent.touchDownAt(x: pointX, y: pointY),
+                FBSimulatorHIDEvent.touch(direction: .down, x: point.x, y: point.y),
                 for: device.resolved,
                 logger: logger
             )
         } else {
             logger.info().log("Touch up")
             try await HIDInteractor.performHIDEvent(
-                FBSimulatorHIDEvent.touchUpAt(x: pointX, y: pointY),
+                FBSimulatorHIDEvent.touch(direction: .up, x: point.x, y: point.y),
                 for: device.resolved,
                 logger: logger
             )
         }
 
         logger.info().log("Touch events completed successfully")
-        return ExecutionResult()
+        return ExecutionResult(commandAdvisory: advisory)
     }
 }

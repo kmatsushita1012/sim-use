@@ -64,7 +64,7 @@ struct KeyboardState: SimUseExecutableCommand {
     var jsonOutput: Bool { json.enabled }
 
     mutating func resolveDeferredArguments() throws {
-        try device.resolve()
+        try device.resolve(allowPhysical: true)
     }
 
     var simulatorUDIDForDaemon: String? { device.resolved }
@@ -78,12 +78,27 @@ struct KeyboardState: SimUseExecutableCommand {
                 visible: state.visible,
                 imePackage: state.imePackage
             )
+        case .iOSDevice:
+            throw TargetCapabilityError.physicalIOS(
+                verb: "keyboard-state",
+                reason: "the accessibility audit channel does not report keyboard visibility.",
+                alternative: "Re-run `sim-use ui` and inspect the outline for the state change you expect instead."
+            )
         case .iOSSim, .none:
-            var sub = IOSSimKeyboardStateCommand()
-            sub.device = device
-            sub.json = json
+            let sub = makeIOSSubcommand()
             return try await sub.execute()
         }
+    }
+
+    /// Construct the backend command and copy every parsed flag across.
+    /// A missed field stays in ArgumentParser's wrapper-definition state
+    /// and traps on first read (#42) — pinned by
+    /// `ForwarderInitializationGuardTests`.
+    func makeIOSSubcommand() -> IOSSimKeyboardStateCommand {
+        var sub = IOSSimKeyboardStateCommand()
+        sub.device = device
+        sub.json = json
+        return sub
     }
 
     func format(_ result: ExecutionResult) -> CommandOutput {

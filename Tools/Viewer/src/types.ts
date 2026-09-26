@@ -56,6 +56,15 @@ export interface Screen {
   appLabel: string;
   width: number;
   height: number;
+  /**
+   * Calibrated interface orientation forwarded from `describe-ui
+   * --json` (`data.orientation`): `"portrait"`,
+   * `"portrait-upside-down"`, `"landscape-right"` or
+   * `"landscape-left"`. Absent when the CLI didn't calibrate
+   * (Android, legacy daemons). Widened to `string` for
+   * forward-compat, like `Device.platform`.
+   */
+  orientation?: string;
 }
 
 export interface Snapshot {

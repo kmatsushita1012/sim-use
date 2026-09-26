@@ -52,6 +52,12 @@ public struct LongPressRequest: SimUseRequest {
                 multiTouch: nil
             )
             return TapResult(x: Double(result.x), y: Double(result.y))
+        case .iOSDevice:
+            throw TargetCapabilityError.physicalIOS(
+                verb: "long-press",
+                reason: "the audit channel's only exposed action is Activate — there is no coordinate input or press-duration control.",
+                alternative: "Use a simulator for long-press gestures."
+            )
         case .iOSSim, .none:
             let request = TapRequest(
                 alias: target.alias,
@@ -89,10 +95,17 @@ public struct AppStateRequest: SimUseRequest {
     public func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> AppStateResult {
         let snapshot: AppSnapshot?
         let platform: String
-        if PlatformRouter.looksLikeAndroid(deviceID.rawValue) {
+        switch PlatformRouter.resolve(udid: deviceID.rawValue) {
+        case .android:
             platform = "android"
             snapshot = AndroidProcessLister.appSnapshot(serial: deviceID.rawValue)
-        } else {
+        case .iOSDevice:
+            throw TargetCapabilityError.physicalIOS(
+                verb: "app-state",
+                reason: "the physical-device channel does not expose a process listing or liveness tracker.",
+                alternative: "Use `ui` to inspect the foreground app on a physical iOS device."
+            )
+        case .iOSSim, .none:
             platform = "ios"
             snapshot = BundleIdentifierResolver.appSnapshot(udid: deviceID.rawValue)
         }

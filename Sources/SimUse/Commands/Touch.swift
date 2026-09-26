@@ -58,6 +58,9 @@ struct Touch: SimUseExecutableCommand {
     @Option(name: .customLong("delay"), help: "Delay between touch down and up events in seconds (if both are specified).")
     var delay: Double?
 
+    @Option(name: .customLong("coordinate-space"), help: "iOS only: 'native' (device-native portrait, the default) or 'ui' (visual space as printed by describe-ui; orientation-calibrated; atomic --down --up form only). Android coordinates are always display space, which already rotates with the UI — the flag is accepted and ignored there.")
+    var coordinateSpace: CoordinateSpace = .native
+
     @OptionGroup var device: DeviceOptions
 
     @OptionGroup var json: JSONOutputOptions
@@ -65,7 +68,7 @@ struct Touch: SimUseExecutableCommand {
     var jsonOutput: Bool { json.enabled }
 
     mutating func resolveDeferredArguments() throws {
-        try device.resolve()
+        try device.resolve(allowPhysical: true)
         if PlatformRouter.looksLikeAndroid(device.resolved) {
             try rejectAndroidSplitForm()
         }
@@ -88,7 +91,8 @@ struct Touch: SimUseExecutableCommand {
             pointX: pointX, pointY: pointY,
             touchDown: touchDown,
             touchUp: touchUp,
-            delay: delay
+            delay: delay,
+            coordinateSpace: coordinateSpace
         )
     }
 
@@ -96,21 +100,37 @@ struct Touch: SimUseExecutableCommand {
         switch PlatformRouter.resolve(udid: device.resolved) {
         case .android:
             return try executeAndroid()
+        case .iOSDevice:
+            throw TargetCapabilityError.physicalIOS(
+                verb: "touch",
+                reason: "touch down/up events are coordinate HID, and the accessibility audit channel exposes no coordinate input.",
+                alternative: "Interact through accessibility actions instead: `sim-use ui` reads the outline, then `sim-use tap '#<id>' / --label` activates an element."
+            )
         case .iOSSim, .none:
             return try await executeIOSSim()
         }
     }
 
     private func executeIOSSim() async throws -> ExecutionResult {
+        let sub = makeIOSSubcommand()
+        return try await sub.execute()
+    }
+
+    /// Construct the backend command and copy every parsed flag across.
+    /// A missed field stays in ArgumentParser's wrapper-definition state
+    /// and traps on first read (#42) — pinned by
+    /// `ForwarderInitializationGuardTests`.
+    func makeIOSSubcommand() -> IOSSimTouchCommand {
         var sub = IOSSimTouchCommand()
         sub.pointX = pointX
         sub.pointY = pointY
         sub.touchDown = touchDown
         sub.touchUp = touchUp
+        sub.coordinateSpace = coordinateSpace
         sub.delay = delay
         sub.device = device
         sub.json = json
-        return try await sub.execute()
+        return sub
     }
 
     private func executeAndroid() throws -> ExecutionResult {

@@ -14,11 +14,40 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-SIMULATOR_NAME="iPhone 17 Pro"
+SIMULATOR_NAME="${SIMULATOR_NAME:-iPhone 17 Pro}"
 SIMULATOR_UDID="${SIMULATOR_UDID:-}"
-PLAYGROUND_PROJECT="SimUsePlaygroundApp/SimUsePlayground.xcodeproj"
+PLAYGROUND_PROJECT="Playgrounds/iOS/SimUsePlayground.xcodeproj"
 PLAYGROUND_SCHEME="SimUsePlayground"
 BUNDLE_ID="com.cameroncooke.SimUsePlayground"
+
+# E2E matrix support (scripts/e2e-matrix.sh): when SIM_USE_TEST_DEVELOPER_DIR
+# is set, simulator control and the playground build run against that Xcode
+# while `swift build` / `swift test` stay on the xcode-select toolchain
+# (build_products/ is toolchain-locked). Tests/TestUtilities.swift injects
+# the same value as DEVELOPER_DIR into every process the suites spawn, so
+# the sim-use binary under test resolves the same Xcode at runtime.
+TARGET_DEVELOPER_DIR="${SIM_USE_TEST_DEVELOPER_DIR:-}"
+
+# Per-Xcode playground DerivedData, so alternating matrix legs stay
+# incremental instead of clobbering each other's caches.
+PLAYGROUND_DD_ARGS=()
+if [[ -n "$TARGET_DEVELOPER_DIR" ]]; then
+    PLAYGROUND_DD_ARGS=(-derivedDataPath ".build/e2e-derived-data/${TARGET_DEVELOPER_DIR//\//-}")
+fi
+
+# The smoke tier: the minimal cross-environment slice the matrix runner
+# uses on secondary legs — describe-ui, tap, type, and the scroll presets.
+SMOKE_FILTERS=("DescribeUITests" "TapTests" "TypeTests" "GestureTests/scroll")
+
+# Run a simulator/xcodebuild command against the target Xcode
+# (passthrough when no matrix override is active).
+run_target() {
+    if [[ -n "$TARGET_DEVELOPER_DIR" ]]; then
+        DEVELOPER_DIR="$TARGET_DEVELOPER_DIR" "$@"
+    else
+        "$@"
+    fi
+}
 
 # Print colored messages
 print_info() {
@@ -54,21 +83,24 @@ show_usage() {
     echo "  -c, --clean         Clean build before building"
     echo "  -s, --sequential    Run suites one-by-one (single simulator-safe flow)"
     echo "  -v, --verbose       Verbose output"
+    echo "      --smoke         Run the smoke tier only (describe-ui, tap, type, scroll)"
     echo ""
-    echo "Test Filters (optional):"
-    echo "  SwipeTests          Run only swipe tests"
-    echo "  TapTests            Run only tap tests"
-    echo "  KeyTests            Run only key tests"
-    echo "  TouchTests          Run only touch tests"
-    echo "  TypeTests           Run only type tests"
-    echo "  ButtonTests         Run only button tests"
-    echo "  GestureTests        Run only gesture tests"
-    echo "  ListSimulatorsTests Run only list simulators tests"
+    echo "Test Filters (optional, repeatable):"
+    echo "  Any 'swift test --filter' pattern: a suite name (TapTests), several"
+    echo "  suites (TapTests TypeTests), or a case pattern (GestureTests/scroll)."
+    echo ""
+    echo "Environment:"
+    echo "  SIMULATOR_UDID              Target simulator (default: newest available"
+    echo "                              '$SIMULATOR_NAME')"
+    echo "  SIM_USE_TEST_DEVELOPER_DIR  Xcode used for simctl / the playground build,"
+    echo "                              injected as DEVELOPER_DIR into spawned sim-use"
+    echo "                              processes (E2E matrix legs)"
     echo ""
     echo "Examples:"
     echo "  $0                  # Build everything and run all tests"
     echo "  $0 SwipeTests       # Build everything and run only swipe tests"
     echo "  $0 -t SwipeTests    # Skip building, run only swipe tests"
+    echo "  $0 --smoke          # Build everything and run the smoke tier"
     echo "  $0 -b               # Only build, skip tests"
     echo "  $0 -c               # Clean build and run all tests"
 }
@@ -77,9 +109,9 @@ show_usage() {
 BUILD_ONLY=false
 TESTS_ONLY=false
 CLEAN_BUILD=false
-SEQUENTIAL=true
 VERBOSE=false
-TEST_FILTER=""
+SMOKE=false
+TEST_FILTERS=()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -100,24 +132,36 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -s|--sequential)
-            SEQUENTIAL=true
+            # Historical flag; sequential is the only mode now.
             shift
             ;;
         -v|--verbose)
             VERBOSE=true
             shift
             ;;
-        SwipeTests|TapTests|KeyTests|TouchTests|TypeTests|ButtonTests|GestureTests|ListSimulatorsTests)
-            TEST_FILTER="$1"
+        --smoke)
+            SMOKE=true
             shift
             ;;
-        *)
+        -*)
             print_error "Unknown option: $1"
             show_usage
             exit 1
             ;;
+        *)
+            TEST_FILTERS+=("$1")
+            shift
+            ;;
     esac
 done
+
+if [[ "$SMOKE" == true ]]; then
+    if [[ ${#TEST_FILTERS[@]} -gt 0 ]]; then
+        print_error "--smoke and explicit test filters are mutually exclusive"
+        exit 1
+    fi
+    TEST_FILTERS=("${SMOKE_FILTERS[@]}")
+fi
 
 # Function to check prerequisites
 check_prerequisites() {
@@ -155,22 +199,25 @@ boot_simulator() {
     print_header "Setting Up Simulator"
 
     if [[ -z "$SIMULATOR_UDID" ]]; then
-        SIMULATOR_UDID=$(xcrun simctl list devices | grep "$SIMULATOR_NAME" | grep -oE '[A-F0-9-]{36}' | head -1)
+        # Exact-name match ("iPhone 17 Pro" must not also catch "… Pro Max");
+        # the newest available runtime wins (sections are listed oldest-first).
+        SIMULATOR_UDID=$(run_target xcrun simctl list devices available \
+            | grep -F "$SIMULATOR_NAME (" | grep -oE '[A-F0-9-]{36}' | tail -1)
     fi
 
     print_info "Checking simulator status..."
-    SIMULATOR_STATUS=$(xcrun simctl list devices | grep "$SIMULATOR_UDID" | grep -o "Booted\|Shutdown" || echo "NotFound")
+    SIMULATOR_STATUS=$(run_target xcrun simctl list devices | grep "$SIMULATOR_UDID" | grep -o "Booted\|Shutdown" || echo "NotFound")
 
     if [[ -z "$SIMULATOR_UDID" || "$SIMULATOR_STATUS" == "NotFound" ]]; then
         print_error "Simulator with UDID $SIMULATOR_UDID not found"
         print_info "Available simulators:"
-        xcrun simctl list devices | grep "iPhone"
+        run_target xcrun simctl list devices | grep "iPhone"
         exit 1
     fi
 
     if [[ "$SIMULATOR_STATUS" != "Booted" ]]; then
         print_info "Booting simulator $SIMULATOR_NAME..."
-        xcrun simctl boot "$SIMULATOR_UDID"
+        run_target xcrun simctl boot "$SIMULATOR_UDID"
         sleep 3
         print_success "Simulator booted"
     else
@@ -187,7 +234,7 @@ clean_build() {
         swift package clean
 
         print_info "Cleaning Xcode build..."
-        xcodebuild clean -project "$PLAYGROUND_PROJECT" -scheme "$PLAYGROUND_SCHEME" -destination "id=$SIMULATOR_UDID"
+        run_target xcodebuild clean -project "$PLAYGROUND_PROJECT" -scheme "$PLAYGROUND_SCHEME" -destination "id=$SIMULATOR_UDID" "${PLAYGROUND_DD_ARGS[@]}"
 
         print_success "Build cleaned"
     fi
@@ -207,6 +254,12 @@ build_sim_use() {
     local sim_use_bin_path
     sim_use_bin_path="$(swift build --show-bin-path)/sim-use"
 
+    # Hand the resolved binary path to the test suites. Resolving it from
+    # inside a running `swift test` deadlocks on SwiftBuild-backend
+    # toolchains (Xcode 26.6+/27): the test run holds the package lock that
+    # a child `swift build --show-bin-path` then waits on forever.
+    export SIM_USE_TEST_BINARY="$sim_use_bin_path"
+
     # Verify the executable exists
     if [[ -f "$sim_use_bin_path" ]]; then
         print_success "sim-use executable built successfully"
@@ -221,13 +274,13 @@ build_sim_use() {
 generate_playground_project() {
     print_header "Generating Playground Xcode Project"
 
-    if [[ ! -f "SimUsePlaygroundApp/project.yml" ]]; then
-        print_error "SimUsePlaygroundApp/project.yml not found."
+    if [[ ! -f "Playgrounds/iOS/project.yml" ]]; then
+        print_error "Playgrounds/iOS/project.yml not found."
         exit 1
     fi
 
     print_info "Running xcodegen..."
-    (cd SimUsePlaygroundApp && xcodegen generate)
+    (cd Playgrounds/iOS && xcodegen generate)
     print_success "Xcode project generated"
 }
 
@@ -237,26 +290,28 @@ build_playground_app() {
 
     # Terminate existing app instance
     print_info "Terminating existing app instance..."
-    xcrun simctl terminate "$SIMULATOR_UDID" "$BUNDLE_ID" 2>/dev/null || true
+    run_target xcrun simctl terminate "$SIMULATOR_UDID" "$BUNDLE_ID" 2>/dev/null || true
 
     # Build the app (not build-for-testing since this is a regular app)
     print_info "Building SimUsePlayground app..."
     if [[ "$VERBOSE" == true ]]; then
-        xcodebuild build \
-            -project "$PLAYGROUND_PROJECT" \
-            -scheme "$PLAYGROUND_SCHEME" \
-            -destination "id=$SIMULATOR_UDID"
-    else
-        xcodebuild build \
+        run_target xcodebuild build \
             -project "$PLAYGROUND_PROJECT" \
             -scheme "$PLAYGROUND_SCHEME" \
             -destination "id=$SIMULATOR_UDID" \
+            "${PLAYGROUND_DD_ARGS[@]}"
+    else
+        run_target xcodebuild build \
+            -project "$PLAYGROUND_PROJECT" \
+            -scheme "$PLAYGROUND_SCHEME" \
+            -destination "id=$SIMULATOR_UDID" \
+            "${PLAYGROUND_DD_ARGS[@]}" \
             -quiet > /dev/null 2>&1
     fi
 
     # Find the built app path using TARGET_BUILD_DIR + FULL_PRODUCT_NAME (more semantically correct)
     print_info "Getting app bundle path..."
-    BUILD_SETTINGS=$(xcodebuild -project "$PLAYGROUND_PROJECT" -scheme "$PLAYGROUND_SCHEME" -destination "id=$SIMULATOR_UDID" -showBuildSettings)
+    BUILD_SETTINGS=$(run_target xcodebuild -project "$PLAYGROUND_PROJECT" -scheme "$PLAYGROUND_SCHEME" -destination "id=$SIMULATOR_UDID" "${PLAYGROUND_DD_ARGS[@]}" -showBuildSettings)
     TARGET_BUILD_DIR=$(echo "$BUILD_SETTINGS" | grep "TARGET_BUILD_DIR" | head -1 | sed 's/.*= //')
     FULL_PRODUCT_NAME=$(echo "$BUILD_SETTINGS" | grep "FULL_PRODUCT_NAME" | head -1 | sed 's/.*= //')
     APP_PATH="$TARGET_BUILD_DIR/$FULL_PRODUCT_NAME"
@@ -271,9 +326,9 @@ build_playground_app() {
     # Install the app
     print_info "Installing SimUsePlayground app on simulator..."
     if [[ "$VERBOSE" == true ]]; then
-        xcrun simctl install "$SIMULATOR_UDID" "$APP_PATH"
+        run_target xcrun simctl install "$SIMULATOR_UDID" "$APP_PATH"
     else
-        xcrun simctl install "$SIMULATOR_UDID" "$APP_PATH" > /dev/null 2>&1
+        run_target xcrun simctl install "$SIMULATOR_UDID" "$APP_PATH" > /dev/null 2>&1
     fi
 
     print_success "Playground app built and installed successfully"
@@ -289,10 +344,13 @@ run_tests() {
     export SIM_USE_E2E=1
 
     print_info "Environment: SIMULATOR_UDID=$SIMULATOR_UDID, SIM_USE_E2E=$SIM_USE_E2E"
+    if [[ -n "$TARGET_DEVELOPER_DIR" ]]; then
+        print_info "Target Xcode (via SIM_USE_TEST_DEVELOPER_DIR): $TARGET_DEVELOPER_DIR"
+    fi
 
     run_swift_test() {
         local filter="$1"
-        local cmd="swift test --filter $filter"
+        local cmd="swift test --filter '$filter'"
 
         if [[ "$VERBOSE" == true ]]; then
             cmd="$cmd --verbose"
@@ -302,66 +360,70 @@ run_tests() {
         eval "$cmd"
     }
 
-    if [[ -n "$TEST_FILTER" ]]; then
-        print_info "Running test filter: $TEST_FILTER"
-        echo ""
-        if run_swift_test "$TEST_FILTER"; then
-            print_success "Selected tests passed"
+    local suites=()
+    if [[ ${#TEST_FILTERS[@]} -gt 0 ]]; then
+        suites=("${TEST_FILTERS[@]}")
+        if [[ "$SMOKE" == true ]]; then
+            print_info "Running the smoke tier: ${suites[*]}"
         else
-            print_error "Selected tests failed"
-            exit 1
+            print_info "Running selected filters: ${suites[*]}"
         fi
-        return
-    fi
-
-    if [[ "$SEQUENTIAL" == true ]]; then
+    else
         print_info "Running E2E suites one-by-one to avoid simulator contention"
-        local suites=(
+        suites=(
             "BatchTests"
             "ButtonTests"
             "DescribeUITests"
             "GestureTests"
+            "HIDRebootRecoveryTests"
             "InitTests"
+            "KeyboardStateTests"
             "KeyComboTests"
             "KeySequenceTests"
             "KeyTests"
             "ListSimulatorsTests"
+            "OrientationTests"
+            "PasteTests"
+            "PermissionAlertTests"
             "RecordVideoTests"
-            "StreamVideoDebugTests"
+            "RemoteContentRecoveryTests"
+            "ScreenshotTests"
+            "StreamVideoDebugTest"
             "StreamVideoTests"
             "SwipeTests"
             "TapTests"
             "TouchTests"
             "TypeTests"
         )
-
-        echo ""
-        for suite in "${suites[@]}"; do
-            print_header "Running $suite"
-            if ! run_swift_test "$suite"; then
-                print_error "$suite failed"
-                exit 1
-            fi
-        done
-
-        print_success "All test suites passed"
-        return
     fi
 
-    print_info "Running all tests"
-    local test_cmd="swift test"
-    if [[ "$VERBOSE" == true ]]; then
-        test_cmd="$test_cmd --verbose"
-    fi
-
-    print_info "Test command: $test_cmd"
+    # Run every suite even after a failure so a single red suite does not
+    # hide the state of the rest; report the full map at the end.
+    local failed_suites=()
+    local passed_suites=()
     echo ""
-    if eval "$test_cmd"; then
-        print_success "All tests passed"
-    else
-        print_error "Some tests failed"
+    for suite in "${suites[@]}"; do
+        print_header "Running $suite"
+        if run_swift_test "$suite"; then
+            passed_suites+=("$suite")
+        else
+            print_error "$suite failed"
+            failed_suites+=("$suite")
+        fi
+    done
+
+    print_header "E2E suite results"
+    for suite in "${passed_suites[@]}"; do
+        print_success "$suite"
+    done
+    for suite in "${failed_suites[@]}"; do
+        print_error "$suite"
+    done
+    if [[ ${#failed_suites[@]} -gt 0 ]]; then
+        print_error "${#failed_suites[@]} of ${#suites[@]} suites failed"
         exit 1
     fi
+    print_success "All ${#suites[@]} test suites passed"
 }
 
 # Function to show summary
@@ -373,8 +435,8 @@ show_summary() {
         print_info "sim-use executable: $(swift build --show-bin-path)/sim-use"
         print_info "Playground app installed on: $SIMULATOR_NAME ($SIMULATOR_UDID)"
     elif [[ "$TESTS_ONLY" == true ]]; then
-        if [[ -n "$TEST_FILTER" ]]; then
-            print_success "Test suite '$TEST_FILTER' completed successfully"
+        if [[ ${#TEST_FILTERS[@]} -gt 0 ]]; then
+            print_success "Test selection '${TEST_FILTERS[*]}' completed successfully"
         else
             print_success "All test suites completed successfully"
         fi
@@ -382,8 +444,8 @@ show_summary() {
         print_success "Build and test cycle completed successfully"
         print_info "sim-use executable: $(swift build --show-bin-path)/sim-use"
         print_info "Playground app: Installed and tested on $SIMULATOR_NAME"
-        if [[ -n "$TEST_FILTER" ]]; then
-            print_info "Test suite: $TEST_FILTER"
+        if [[ ${#TEST_FILTERS[@]} -gt 0 ]]; then
+            print_info "Test selection: ${TEST_FILTERS[*]}"
         else
             print_info "Test coverage: All test suites"
         fi

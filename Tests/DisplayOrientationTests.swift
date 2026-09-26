@@ -98,6 +98,100 @@ struct DisplayOrientationTransformTests {
     }
 }
 
+// iPhone 12 mini lays out 375x812 points, renders them into a 1125x2436
+// buffer and downsamples onto its 1080x2340 panel — so pixels / scale, the
+// space HID normalizes against, is 360x780.
+private let mini = NativePortraitSize(width: 360, height: 780)
+private let miniScale = UIPointScale(native: mini, uiPortrait: (width: 375, height: 812))!
+
+@Suite("Display-downscaled devices")
+struct DownscaledDisplayTests {
+    // Measured live on iPhone 12 mini / iOS 26.3.1: a button whose AX frame
+    // spans y 660...708 only fired when the HID event was sent at y 657.
+    // Dispatching its center verbatim landed 28 points low, in the gap
+    // below the button.
+    @Test("portrait carries UI points into the framebuffer metric")
+    func portraitScale() {
+        let f = DisplayOrientation.portrait.uiToFramebuffer(
+            CGPoint(x: 187.5, y: 684),
+            native: mini,
+            uiScale: miniScale
+        )
+        #expect(abs(f.x - 180) < 0.001)
+        #expect(abs(f.y - 657.04) < 0.01)
+    }
+
+    @Test("uiSize reports the UI space, not pixels / scale")
+    func uiSizeIsUISpace() {
+        let portrait = DisplayOrientation.portrait.uiSize(native: mini, uiScale: miniScale)
+        #expect(abs(portrait.width - 375) < 0.001)
+        #expect(abs(portrait.height - 812) < 0.001)
+        let landscape = DisplayOrientation.landscapeRight.uiSize(native: mini, uiScale: miniScale)
+        #expect(abs(landscape.width - 812) < 0.001)
+        #expect(abs(landscape.height - 375) < 0.001)
+    }
+
+    @Test("round-trip is identity for every orientation", arguments: DisplayOrientation.allCases)
+    func roundTrip(orientation: DisplayOrientation) {
+        let ui = orientation.uiSize(native: mini, uiScale: miniScale)
+        for p in [
+            CGPoint(x: 1, y: 1),
+            CGPoint(x: ui.width / 2, y: ui.height / 2),
+            CGPoint(x: ui.width - 1, y: ui.height - 1),
+        ] {
+            let f = orientation.uiToFramebuffer(p, native: mini, uiScale: miniScale)
+            #expect(f.x >= 0 && f.x < mini.width)
+            #expect(f.y >= 0 && f.y < mini.height)
+            let back = orientation.framebufferToUI(f, native: mini, uiScale: miniScale)
+            #expect(abs(back.x - p.x) < 0.0001)
+            #expect(abs(back.y - p.y) < 0.0001)
+        }
+    }
+}
+
+@Suite("UIPointScale")
+struct UIPointScaleTests {
+    @Test("identity when the panel renders the UI 1:1")
+    func identityOnUnscaledPanels() {
+        let iPhone17 = NativePortraitSize(width: 402, height: 874)
+        #expect(UIPointScale(native: iPhone17, uiPortrait: (width: 402, height: 874))?.isIdentity == true)
+        #expect(miniScale.isIdentity == false)
+    }
+
+    @Test("degenerate UI sizes are rejected")
+    func degenerateUISize() {
+        #expect(UIPointScale(native: mini, uiPortrait: (width: 0, height: 812)) == nil)
+        #expect(UIPointScale(native: mini, uiPortrait: (width: 375, height: -1)) == nil)
+    }
+
+    @Test("recovered from either orientation's screen size")
+    func recoveredFromRotatedScreenSize() {
+        let fromPortrait = OrientationCalibrator.uiPointScale(
+            native: mini,
+            uiScreenSize: (width: 375, height: 812)
+        )
+        let fromLandscape = OrientationCalibrator.uiPointScale(
+            native: mini,
+            uiScreenSize: (width: 812, height: 375)
+        )
+        #expect(fromPortrait == fromLandscape)
+        #expect(fromPortrait.isIdentity == false)
+        #expect(OrientationCalibrator.uiPointScale(native: mini, uiScreenSize: nil).isIdentity)
+    }
+
+    @Test("a window-sized UI does not become a scale")
+    func skewedSizesFallBackToIdentity() {
+        // An iPad scene resized to a third of the display: the axis ratios
+        // disagree, so this is a window, not a downscaled panel.
+        let iPad = NativePortraitSize(width: 834, height: 1210)
+        let scale = OrientationCalibrator.uiPointScale(
+            native: iPad,
+            uiScreenSize: (width: 320, height: 1210)
+        )
+        #expect(scale.isIdentity)
+    }
+}
+
 @Suite("NativePortraitSize")
 struct NativePortraitSizeTests {
     @Test("screenInfo converts pixels to points via scale")

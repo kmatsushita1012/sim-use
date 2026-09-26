@@ -28,6 +28,8 @@ public struct AndroidCommand: ParsableCommand {
             AndroidScrollCommand.self,
             AndroidButtonCommand.self,
             AndroidScreenshotCommand.self,
+            AndroidRecordVideoCommand.self,
+            AndroidStreamVideoCommand.self,
             AndroidTypeCommand.self,
         ]
     )

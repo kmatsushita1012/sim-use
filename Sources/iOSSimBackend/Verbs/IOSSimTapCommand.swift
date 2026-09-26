@@ -21,51 +21,7 @@ public struct IOSSimTapCommand: SimUseExecutableCommand {
     ))
     public var alias: String?
 
-    @Option(name: [.customShort("x"), .customLong("x")], help: "The X coordinate of the point to tap. Accepts -x or --x.")
-    public var pointX: Double?
-
-    @Option(name: [.customShort("y"), .customLong("y")], help: "The Y coordinate of the point to tap. Accepts -y or --y.")
-    public var pointY: Double?
-
-    @Option(name: .customLong("point"), help: ArgumentHelp(
-        "The point to tap as a coordinate pair — same semantics as -x/-y; specify only one form.",
-        valueName: "x,y"
-    ))
-    public var point: CoordinatePair?
-
-    @Option(name: [.customLong("id")], help: "Tap the center of the element matching AXUniqueId/resource-id literally. For the N-th outline entry, use the positional `@N` alias instead — `--id 42` matches the identifier string '42', NOT outline alias @42. Ignored if explicit coordinates (-x/-y or --point) are provided.")
-    public var elementID: String?
-
-    @Option(name: [.customLong("label")], help: "Tap the center of the element matching AXLabel (accessibilityLabel). Ignored if explicit coordinates (-x/-y or --point) are provided.")
-    public var elementLabel: String?
-
-    @Option(name: [.customLong("value")], help: "Tap the center of the element matching AXValue (the current value of a control). Ignored if explicit coordinates (-x/-y or --point) are provided.")
-    public var elementValue: String?
-
-    @Option(name: [.customLong("label-contains")], help: "Tap the element whose AXLabel contains this case-sensitive substring. Useful when labels carry dynamic state (counters, timestamps). Mutually exclusive with --id/--label/--value/--label-regex.")
-    public var labelContains: String?
-
-    @Option(name: [.customLong("label-regex")], help: "Tap the element whose AXLabel matches this ICU regex. Anchor with ^/$ for exact match. Mutually exclusive with --id/--label/--value/--label-contains.")
-    public var labelRegex: String?
-
-    @Option(name: [.customLong("element-type")], help: "Filter matches to elements of this accessibility type (e.g. Button, TextField, Switch). Narrows --id/--label/--value/--label-contains/--label-regex results when multiple elements match.")
-    public var elementType: String?
-
-    @Option(
-        name: .customLong("frame"),
-        parsing: .singleValue,
-        help: ArgumentHelp(
-            "Geometric AND-filter on frame bounds. Repeatable. Each value is a comma-separated list of `key=value` pairs. Keys: minX, maxX, minY, maxY. Values are absolute pixels (e.g. 700) or 0..1 fractions of the screen with an `r` suffix (e.g. 0.6r). Combine with selectors to disambiguate when several elements share a label/pattern but live in different screen regions.",
-            valueName: "key=value[,key=value]"
-        )
-    )
-    public var frameSpecs: [String] = []
-
-    @Option(name: .customLong("pre-delay"), help: "Delay before tapping in seconds.")
-    public var preDelay: Double?
-
-    @Option(name: .customLong("post-delay"), help: "Delay after tapping in seconds.")
-    public var postDelay: Double?
+    @OptionGroup public var targeting: TapTargetingOptions
 
     @Option(
         name: .customLong("duration"),
@@ -75,11 +31,7 @@ public struct IOSSimTapCommand: SimUseExecutableCommand {
     )
     public var duration: Double?
 
-    @Option(name: .customLong("wait-timeout"), help: "Maximum seconds to poll for the element before failing (0 = no waiting, default). Only applies to --id/--label/--value/--label-contains/--label-regex targeting.")
-    public var waitTimeout: Double = 0
-
-    @Option(name: .customLong("poll-interval"), help: "Seconds between accessibility tree polls when --wait-timeout is active (default: 0.25).")
-    public var pollInterval: Double = 0.25
+    @OptionGroup public var timing: TapTimingOptions
 
     @OptionGroup public var multiTouch: MultiTouchOptions
 
@@ -98,15 +50,31 @@ public struct IOSSimTapCommand: SimUseExecutableCommand {
     public var simulatorUDIDForDaemon: String? { device.resolved }
 
     public var frameFilter: AccessibilityTargetResolver.FrameFilter? {
-        // Validation guarantees parse success; force-try keeps execute()
-        // free of throws-only-for-validate paths.
-        let filter = (try? AccessibilityTargetResolver.FrameFilter(specs: frameSpecs)) ?? .init()
+        Self.frameFilter(from: targeting)
+    }
+
+    static func frameFilter(from targeting: TapTargetingOptions) -> AccessibilityTargetResolver.FrameFilter? {
+        // Validation guarantees parse success; force-try keeps the
+        // execution path free of throws-only-for-validate branches.
+        let filter = (try? AccessibilityTargetResolver.FrameFilter(specs: targeting.frameSpecs)) ?? .init()
         return filter.isEmpty ? nil : filter
     }
 
-    public struct ExecutionResult: Codable, Sendable, CommandAdvisoryProviding {
-        public let x: Double
-        public let y: Double
+    public struct ExecutionResult: Codable, CommandAdvisoryProviding {
+        /// Dispatch coordinates. Present on simulator and Android
+        /// results; nil on physical-iOS results — the audit channel has
+        /// no geometry, so a routed physical tap reports the matched
+        /// element instead (the four fields below, nil here otherwise).
+        public let x: Double?
+        public let y: Double?
+        public let action: String?
+        public let role: String?
+        public let label: String?
+        public let identifier: String?
+        /// "physical" on physical-iOS results; absent otherwise.
+        /// Additive key so agents can detect the degraded shape without
+        /// probing for missing coordinates.
+        public let kind: String?
         /// Excluded from the encoded `data` payload via `CodingKeys`
         /// (the default value keeps decode synthesis working) — the
         /// envelope hoists it to the top-level `advisory` key. See
@@ -116,154 +84,95 @@ public struct IOSSimTapCommand: SimUseExecutableCommand {
         public init(x: Double, y: Double, commandAdvisory: CommandAdvisory? = nil) {
             self.x = x
             self.y = y
+            self.action = nil
+            self.role = nil
+            self.label = nil
+            self.identifier = nil
+            self.kind = nil
             self.commandAdvisory = commandAdvisory
+        }
+
+        /// Physical-iOS shape: the accessibility action sent and the
+        /// element it resolved to, in the `ios-device tap` vocabulary.
+        public init(action: String, role: String, label: String, identifier: String?) {
+            self.x = nil
+            self.y = nil
+            self.action = action
+            self.role = role
+            self.label = label
+            self.identifier = identifier
+            self.kind = "physical"
+        }
+
+        /// Success line shared by every tap `format(_:)` site, so the
+        /// coordinate and matched-element renderings cannot drift
+        /// between the top-level forwarder and the namespaces. The
+        /// element form matches `IOSDeviceCommand.Tap.summaryLine`
+        /// byte-for-byte (pinned by test).
+        public var summaryLine: String {
+            if let x, let y {
+                return "✓ Tap at (\(x), \(y)) completed successfully"
+            }
+            let id = identifier.map { " #\($0)" } ?? ""
+            return "Sent \(action ?? "Activate") to '\(label ?? "")' [\(role ?? "")]\(id)"
         }
 
         private enum CodingKeys: String, CodingKey {
             case x
             case y
+            case action
+            case role
+            case label
+            case identifier
+            case kind
         }
     }
 
+    /// The rules themselves live on the shared groups
+    /// (`TapTargetingOptions.validate(alias:)` /
+    /// `TapTimingOptions.validate()`) so all three tap surfaces run the
+    /// same table. ArgumentParser does not auto-validate nested option
+    /// groups — the explicit calls here are load-bearing, and
+    /// `TapValidationParityTests` pins that every surface makes them.
     public func validate() throws {
-        try Self.validateOptions(
-            alias: alias,
-            pointX: pointX, pointY: pointY, point: point,
-            elementID: elementID,
-            elementLabel: elementLabel,
-            elementValue: elementValue,
-            labelContains: labelContains,
-            labelRegex: labelRegex,
-            preDelay: preDelay,
-            postDelay: postDelay,
-            duration: duration,
-            waitTimeout: waitTimeout,
-            pollInterval: pollInterval,
-            frameSpecs: frameSpecs
-        )
+        try targeting.validate(alias: alias)
+        try timing.validate()
+        try TapTimingOptions.validateDuration(duration)
         try multiTouch.validate()
     }
 
-    /// Shared validation factored out as a static so the top-level
-    /// cross-platform forwarder (`Sources/SimUse/Commands/Tap.swift`)
-    /// runs the same rules without re-implementing them.
-    public static func validateOptions(
-        alias: String?,
-        pointX: Double?,
-        pointY: Double?,
-        point: CoordinatePair?,
-        elementID: String?,
-        elementLabel: String?,
-        elementValue: String?,
-        labelContains: String?,
-        labelRegex: String?,
-        preDelay: Double?,
-        postDelay: Double?,
-        duration: Double?,
-        waitTimeout: Double,
-        pollInterval: Double,
-        frameSpecs: [String]
-    ) throws {
-        if let alias {
-            guard OutlineAliasResolver.looksLikeAlias(alias) else {
-                throw ValidationError("Positional alias '\(alias)' must be `@N`, `#N`, `#N@M`, or `#<identifier>`.")
-            }
-            var conflicts: [String] = []
-            if pointX != nil { conflicts.append("-x") }
-            if pointY != nil { conflicts.append("-y") }
-            if point != nil { conflicts.append("--point") }
-            if elementID != nil { conflicts.append("--id") }
-            if elementLabel != nil { conflicts.append("--label") }
-            if elementValue != nil { conflicts.append("--value") }
-            if labelContains != nil { conflicts.append("--label-contains") }
-            if labelRegex != nil { conflicts.append("--label-regex") }
-            if !conflicts.isEmpty {
-                throw ValidationError("Alias '\(alias)' cannot be combined with \(conflicts.joined(separator: ", ")).")
-            }
-        } else if pointX != nil || pointY != nil || point != nil {
-            _ = try TapCoordinateResolver.resolve(x: pointX, y: pointY, point: point)
-        } else {
-            let selectors: [(String, String?)] = [
-                ("--id", elementID),
-                ("--label", elementLabel),
-                ("--value", elementValue),
-                ("--label-contains", labelContains),
-                ("--label-regex", labelRegex),
-            ]
-            let provided = selectors.filter { $0.1 != nil }
-            if provided.isEmpty {
-                throw ValidationError("Either provide an `@N` / `#N` / `#N@M` alias, coordinates (--point x,y or both -x/-y), or use --id/--label/--value/--label-contains/--label-regex to tap an element.")
-            }
-            if provided.count > 1 {
-                let names = provided.map(\.0).joined(separator: ", ")
-                throw ValidationError("Use only one of --id, --label, --value, --label-contains, --label-regex (got: \(names)).")
-            }
-            for (name, raw) in provided {
-                if let raw, raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    throw ValidationError("\(name) must not be empty.")
-                }
-            }
-            if let labelRegex {
-                do {
-                    _ = try NSRegularExpression(pattern: labelRegex, options: [])
-                } catch {
-                    throw ValidationError("--label-regex '\(labelRegex)' is not a valid regular expression: \(error.localizedDescription)")
-                }
-            }
-        }
-
-        if let preDelay = preDelay {
-            guard preDelay >= 0 && preDelay <= 10.0 else {
-                throw ValidationError("Pre-delay must be between 0 and 10 seconds.")
-            }
-        }
-
-        if let postDelay = postDelay {
-            guard postDelay >= 0 && postDelay <= 10.0 else {
-                throw ValidationError("Post-delay must be between 0 and 10 seconds.")
-            }
-        }
-
-        if let duration {
-            guard duration >= 0 && duration <= 10.0 else {
-                throw ValidationError("--duration must be between 0 and 10 seconds.")
-            }
-        }
-
-        guard waitTimeout >= 0 else {
-            throw ValidationError("--wait-timeout must be non-negative.")
-        }
-
-        if waitTimeout > 0 {
-            guard pollInterval > 0 else {
-                throw ValidationError("--poll-interval must be greater than 0 when --wait-timeout is active.")
-            }
-        }
-
-        if !frameSpecs.isEmpty {
-            do {
-                _ = try AccessibilityTargetResolver.FrameFilter(specs: frameSpecs)
-            } catch let error as AccessibilityTargetResolver.FrameFilter.ParseError {
-                throw ValidationError(error.message)
-            }
-
-            if pointX != nil || pointY != nil || point != nil {
-                throw ValidationError("--frame cannot be combined with explicit -x/-y/--point coordinates (those bypass the AX tree).")
-            }
-            if let alias, case .some(let parsed) = OutlineAliasResolver.parse(alias) {
-                switch parsed {
-                case .at, .list:
-                    throw ValidationError("--frame cannot be combined with the @N / #N / #N@M alias forms (they resolve to cached coordinates without consulting the AX tree). Use --label / --label-contains / --label-regex / --id / #<id> with --frame instead.")
-                case .id:
-                    break
-                }
-            }
-        }
+    public func execute() async throws -> ExecutionResult {
+        try await Self.performTap(
+            alias: alias,
+            targeting: targeting,
+            timing: timing,
+            duration: duration,
+            multiTouch: multiTouch,
+            device: device,
+            json: json
+        )
     }
 
-    public func execute() async throws -> ExecutionResult {
+    /// Typed executor entry point — the iOS mirror of
+    /// `AndroidTapCommand.performTap`. Both `sim-use ios tap` (via
+    /// `execute()` above) and the top-level `tap` / `long-press`
+    /// forwarders call this directly with their parsed groups, so no
+    /// backend command instance is ever hand-built and the
+    /// wrapper-definition trap (#41/#42) cannot occur on this path.
+    /// Callers are expected to have run the shared validators first.
+    public static func performTap(
+        alias: String?,
+        targeting: TapTargetingOptions,
+        timing: TapTimingOptions,
+        duration: Double?,
+        multiTouch: MultiTouchOptions,
+        device: DeviceOptions,
+        json: JSONOutputOptions
+    ) async throws -> ExecutionResult {
         let logger = SimUseLogger()
-        try await setup(logger: logger)
+        let jsonOutput = json.enabled
+        let frameFilter = Self.frameFilter(from: targeting)
+        try await performEssentialSetup(logger: logger)
         try await performGlobalSetup(logger: logger)
 
         let resolvedPoint: (x: Double, y: Double)
@@ -307,9 +216,9 @@ public struct IOSSimTapCommand: SimUseExecutableCommand {
                     let hidTarget = try await AccessibilityPoller.resolveWithPollingHIDTarget(
                         query: .id(uniqueId),
                         simulatorUDID: device.resolved,
-                        waitTimeout: waitTimeout,
-                        pollInterval: pollInterval,
-                        elementType: elementType,
+                        waitTimeout: timing.waitTimeout,
+                        pollInterval: timing.pollInterval,
+                        elementType: targeting.elementType,
                         frameFilter: frameFilter,
                         logger: logger
                     )
@@ -326,22 +235,22 @@ public struct IOSSimTapCommand: SimUseExecutableCommand {
             case nil:
                 throw CLIError(errorDescription: "Internal error: alias '\(alias)' passed validation but could not be parsed.")
             }
-        } else if let explicit = try TapCoordinateResolver.resolve(x: pointX, y: pointY, point: point) {
+        } else if let explicit = try TapCoordinateResolver.resolve(x: targeting.pointX, y: targeting.pointY, point: targeting.point) {
             resolvedPoint = (x: explicit.x, y: explicit.y)
             resolvedDescription = "(\(explicit.x), \(explicit.y))"
             resolvedAdvisory = nil
             calibration = nil
         } else {
             let query: AccessibilityQuery
-            if let elementID {
+            if let elementID = targeting.elementID {
                 query = .id(elementID)
-            } else if let elementLabel {
+            } else if let elementLabel = targeting.elementLabel {
                 query = .label(elementLabel)
-            } else if let elementValue {
+            } else if let elementValue = targeting.elementValue {
                 query = .value(elementValue)
-            } else if let labelContains {
+            } else if let labelContains = targeting.labelContains {
                 query = .labelContains(labelContains)
-            } else if let labelRegex {
+            } else if let labelRegex = targeting.labelRegex {
                 query = .labelRegex(pattern: labelRegex)
             } else {
                 throw CLIError(errorDescription: "Unexpected state: no coordinates and no element query.")
@@ -351,9 +260,9 @@ public struct IOSSimTapCommand: SimUseExecutableCommand {
                 let hidTarget = try await AccessibilityPoller.resolveWithPollingHIDTarget(
                     query: query,
                     simulatorUDID: device.resolved,
-                    waitTimeout: waitTimeout,
-                    pollInterval: pollInterval,
-                    elementType: elementType,
+                    waitTimeout: timing.waitTimeout,
+                    pollInterval: timing.pollInterval,
+                    elementType: targeting.elementType,
                     frameFilter: frameFilter,
                     logger: logger
                 )
@@ -380,7 +289,7 @@ public struct IOSSimTapCommand: SimUseExecutableCommand {
             logger.info().log("Orientation \(calibration.orientation.rawValue): dispatching HID at (\(dispatchPoint.x), \(dispatchPoint.y))")
         }
 
-        if let preDelay = preDelay, preDelay > 0 {
+        if let preDelay = timing.preDelay, preDelay > 0 {
             logger.info().log("Pre-delay: \(preDelay)s")
             try await Task.sleep(nanoseconds: UInt64(preDelay * 1_000_000_000))
         }
@@ -428,26 +337,37 @@ public struct IOSSimTapCommand: SimUseExecutableCommand {
             // some recognisers.
             logger.info().log("Touch down (hold \(duration)s)")
             try await HIDInteractor.performHIDEvent(
-                FBSimulatorHIDEvent.touchDownAt(x: dispatchPoint.x, y: dispatchPoint.y),
+                FBSimulatorHIDEvent.touch(direction: .down, x: dispatchPoint.x, y: dispatchPoint.y),
                 for: device.resolved,
                 logger: logger
             )
             try await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
             logger.info().log("Touch up")
             try await HIDInteractor.performHIDEvent(
-                FBSimulatorHIDEvent.touchUpAt(x: dispatchPoint.x, y: dispatchPoint.y),
+                FBSimulatorHIDEvent.touch(direction: .up, x: dispatchPoint.x, y: dispatchPoint.y),
                 for: device.resolved,
                 logger: logger
             )
         } else {
+            // A single `tapAt` message is accepted by the transport but can
+            // be dropped by the in-process simulator runtime before UIKit
+            // observes it. Send an explicit press lifecycle through one
+            // session so CLI, daemon, and SimUseKit clients all reach the
+            // same recognizers.
+            let session = try await HIDInteractor.makeSession(for: device.resolved, logger: logger)
             try await HIDInteractor.performHIDEvent(
-                FBSimulatorHIDEvent.tapAt(x: dispatchPoint.x, y: dispatchPoint.y),
-                for: device.resolved,
+                FBSimulatorHIDEvent.touch(direction: .down, x: dispatchPoint.x, y: dispatchPoint.y),
+                in: session,
+                logger: logger
+            )
+            try await HIDInteractor.performHIDEvent(
+                FBSimulatorHIDEvent.touch(direction: .up, x: dispatchPoint.x, y: dispatchPoint.y),
+                in: session,
                 logger: logger
             )
         }
 
-        if let postDelay = postDelay, postDelay > 0 {
+        if let postDelay = timing.postDelay, postDelay > 0 {
             logger.info().log("Post-delay: \(postDelay)s")
             try await Task.sleep(nanoseconds: UInt64(postDelay * 1_000_000_000))
         }
@@ -457,7 +377,7 @@ public struct IOSSimTapCommand: SimUseExecutableCommand {
     }
 
     public func format(_ result: ExecutionResult) -> CommandOutput {
-        .line("✓ Tap at (\(result.x), \(result.y)) completed successfully")
+        .line(result.summaryLine)
     }
 
     /// The `@N` cache was written by a `describe-ui` run whose screen
@@ -470,8 +390,7 @@ public struct IOSSimTapCommand: SimUseExecutableCommand {
         calibration: OrientationCalibration,
         payload: OutlineCache.Payload
     ) -> CommandAdvisory? {
-        guard let native = calibration.native else { return nil }
-        let size = calibration.orientation.uiSize(native: native)
+        guard let size = calibration.uiScreenSize() else { return nil }
         guard abs(size.width - Double(payload.screen.width)) > 1
             || abs(size.height - Double(payload.screen.height)) > 1
         else { return nil }

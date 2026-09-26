@@ -64,6 +64,12 @@ public struct IOSSimDescribeUICommand: SimUseExecutableCommand {
 
     @OptionGroup public var json: JSONOutputOptions
 
+    @Flag(
+        name: .customLong("no-raw"),
+        help: "With --json, omit the raw accessibility tree (`data.raw`) from the envelope. `outline` / `entries` / `lists` are unaffected; on real app screens the raw tree typically dominates the payload."
+    )
+    public var noRaw: Bool = false
+
     public var jsonOutput: Bool { json.enabled }
 
     /// Result shape is structured under `raw` rather than being the bare
@@ -76,14 +82,22 @@ public struct IOSSimDescribeUICommand: SimUseExecutableCommand {
     /// `DESCRIBE_UI_OUTLINE.md` §4.
     public struct ExecutionResult: Codable, Sendable, CommandAdvisoryProviding {
         public let platform: String
-        /// Raw a11y tree passthrough. Optional because the daemon path
-        /// skips encoding it when the client didn't request `--json` —
-        /// the ~200 KB tree adds 80 ms of round-trip cost otherwise.
+        /// "physical" on physical-iOS results routed through the
+        /// top-level verb; absent otherwise. Additive key mirroring the
+        /// `Device.kind` axis, so agents can detect the restricted
+        /// shape (no frames, no aliases) without probing for missing
+        /// fields.
+        public let kind: String?
+        /// Raw a11y tree passthrough. `nil` when the client didn't
+        /// request `--json`, or opted out with `--no-raw` — the
+        /// ~200 KB tree adds 80 ms of round-trip cost otherwise.
         public let raw: JSONValue?
         public let outline: String
         public let entries: [Outline.Entry]
         public let lists: [Outline.ListSummary]
-        public let screen: Outline.Frame
+        /// Screen bounds in platform-native units. `nil` on physical-iOS
+        /// results — the audit channel exposes no geometry.
+        public let screen: Outline.Frame?
         public let appLabel: String
         /// CFBundleIdentifier of the foreground app. iOS V1 leaves this
         /// empty when the AX tree doesn't expose it; resolution via
@@ -107,11 +121,12 @@ public struct IOSSimDescribeUICommand: SimUseExecutableCommand {
 
         public init(
             platform: String,
+            kind: String? = nil,
             raw: JSONValue?,
             outline: String,
             entries: [Outline.Entry],
             lists: [Outline.ListSummary],
-            screen: Outline.Frame,
+            screen: Outline.Frame?,
             appLabel: String,
             appPackage: String,
             crashDialog: CrashDialogSignal? = nil,
@@ -119,6 +134,7 @@ public struct IOSSimDescribeUICommand: SimUseExecutableCommand {
             commandAdvisory: CommandAdvisory? = nil
         ) {
             self.platform = platform
+            self.kind = kind
             self.raw = raw
             self.outline = outline
             self.entries = entries
@@ -133,6 +149,7 @@ public struct IOSSimDescribeUICommand: SimUseExecutableCommand {
 
         private enum CodingKeys: String, CodingKey {
             case platform
+            case kind
             case raw
             case outline
             case entries
@@ -196,12 +213,42 @@ public struct IOSSimDescribeUICommand: SimUseExecutableCommand {
     }
 
     public func execute() async throws -> ExecutionResult {
+        try await Self.performDescribeUI(
+            deviceID: device.resolved,
+            point: point,
+            maxProbes: maxProbes,
+            minCellSize: minCellSize,
+            seedCellWidth: seedCellWidth,
+            seedCellHeight: seedCellHeight,
+            includeRaw: jsonOutput && !noRaw
+        )
+    }
+
+    /// Executes a describe-ui operation from already validated values. This
+    /// lets in-process callers use the same backend without constructing an
+    /// ArgumentParser command instance.
+    public static func performDescribeUI(
+        deviceID: String,
+        point: CoordinatePair?,
+        maxProbes: Int,
+        minCellSize: Double,
+        seedCellWidth: Double,
+        seedCellHeight: Double,
+        includeRaw: Bool
+    ) async throws -> ExecutionResult {
+        try validatePoint(point)
+        try validateOptions(
+            maxProbes: maxProbes,
+            minCellSize: minCellSize,
+            seedCellWidth: seedCellWidth,
+            seedCellHeight: seedCellHeight
+        )
         let logger = SimUseLogger()
         try await performGlobalSetup(logger: logger)
 
         let parsedPoint = point.map { AccessibilityPoint(x: $0.x, y: $0.y) }
         let fetchResult = try await AccessibilityFetcher.fetchAccessibilityInfo(
-            for: device.resolved,
+            for: deviceID,
             point: parsedPoint,
             logger: logger,
             maxProbes: maxProbes,
@@ -210,11 +257,11 @@ public struct IOSSimDescribeUICommand: SimUseExecutableCommand {
             seedCellHeight: seedCellHeight
         )
         let jsonData = fetchResult.data
-        // Only build the JSONValue tree when the client asked for it
-        // (`--json`). On a complex screen the parse is ~30 ms and
-        // shuffling it across the daemon socket adds another ~80 ms.
-        // `outline` + `entries` cover every other consumer.
-        let tree: JSONValue? = jsonOutput ? try JSONValue.decode(from: jsonData) : nil
+        // Only build the JSONValue tree when the client will actually
+        // see it. On a complex screen the parse is ~30 ms and shuffling
+        // it across the daemon socket adds another ~80 ms. `outline` +
+        // `entries` cover every other consumer.
+        let tree: JSONValue? = includeRaw ? try JSONValue.decode(from: jsonData) : nil
 
         // Decode the same bytes into the typed tree for outline rendering.
         // `--point` returns a single element object instead of a root
@@ -241,7 +288,7 @@ public struct IOSSimDescribeUICommand: SimUseExecutableCommand {
         // the daemon's just-taken liveness snapshot to avoid a second
         // `launchctl` spawn when the root pid is already known.
         let appPackage = BundleIdentifierResolver.resolve(
-            udid: device.resolved,
+            udid: deviceID,
             rootElement: typedTree.first,
             cachedSnapshot: DaemonDispatch.lastLivenessSnapshot
         )
@@ -262,7 +309,7 @@ public struct IOSSimDescribeUICommand: SimUseExecutableCommand {
             do {
                 try OutlineCache.write(
                     outline: outline,
-                    udid: device.resolved,
+                    udid: deviceID,
                     orientation: orientation?.rawValue
                 )
             } catch {
@@ -280,10 +327,13 @@ public struct IOSSimDescribeUICommand: SimUseExecutableCommand {
             appLabel: outline.appLabel,
             appPackage: appPackage,
             orientation: orientation?.rawValue,
-            // Degraded calibration (guessed orientation) must reach the
-            // caller: the outline may have lost regions to mis-mapped
-            // recovery probes and `orientation` is a guess, not a fact.
-            commandAdvisory: fetchResult.calibration?.advisory
+            // Degraded calibration (guessed orientation) and remote-content
+            // recovery (issue #64) must both reach the caller: the outline
+            // may be a guess-mapped or cross-process-recovered view rather
+            // than a plain frontmost tree.
+            commandAdvisory: CommandAdvisory.merged(
+                [fetchResult.advisory, fetchResult.calibration?.advisory].compactMap { $0 }
+            )
         )
     }
 

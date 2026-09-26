@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 import ArgumentParser
 import Foundation
+import CompanionUtilities
 import FBSimulatorControl
 @preconcurrency import FBControlCore
 import SimUseCore
+import SimUseVideo
 
-/// iOS Simulator backend for the `stream-video` verb. iOS-only — no
-/// Android peer. The Android path used to fail-fast with a redirect
-/// to `record-video`; with path B the entire verb only exists under
-/// `sim-use ios stream-video`, so an Android caller never reaches
-/// this code path in the first place.
+/// iOS Simulator backend for the `stream-video` verb. The top-level
+/// cross-platform `StreamVideo` forwards iOS UDIDs here (#78); an
+/// Android UDID passed directly to `sim-use ios stream-video` is
+/// redirected to the surfaces that serve it.
 public struct IOSSimStreamVideoCommand: SimUseExecutableCommand {
     public enum OutputFormat: String, ExpressibleByArgument, Codable, Sendable {
         case mjpeg
@@ -21,9 +22,10 @@ public struct IOSSimStreamVideoCommand: SimUseExecutableCommand {
     /// Summary of a completed stream run. The actual video bytes are
     /// written to stdout inline during `execute()` — they are a side
     /// channel, not part of the Result. Streaming commands bypass the
-    /// daemon transport for exactly this reason, but the typed Result
-    /// still powers a future `--json` flag that emits the summary alone.
-    public struct ExecutionResult: Codable, Sendable {
+    /// daemon transport for exactly this reason, and `--json` is
+    /// rejected in validate(): the envelope would be appended to the
+    /// same stdout as the video bytes and corrupt the stream.
+    public struct ExecutionResult: Codable {
         public let framesStreamed: UInt64
         public let durationSeconds: Double
         public let format: OutputFormat
@@ -65,7 +67,7 @@ public struct IOSSimStreamVideoCommand: SimUseExecutableCommand {
            PlatformRouter.looksLikeAndroid(arg) {
             // CLIError so the message survives our run() catch — see
             // IOSSimKeyCommand for the rationale.
-            throw CLIError(errorDescription: "stream-video is iOS-only. On Android, use `sim-use record-video --udid \(arg)` to capture an MP4 instead.")
+            throw CLIError(errorDescription: "`sim-use ios stream-video` only drives iOS simulators. For Android, use `sim-use stream-video --udid \(arg)` (or `sim-use android stream-video`).")
         }
         try device.resolve()
     }
@@ -89,19 +91,12 @@ public struct IOSSimStreamVideoCommand: SimUseExecutableCommand {
     }
 
     public func validate() throws {
-        try Self.validateOptions(fps: fps, quality: quality, scale: scale)
-    }
-
-    public static func validateOptions(fps: Int, quality: Int, scale: Double) throws {
-        guard fps >= 1 && fps <= 30 else {
-            throw ValidationError("FPS must be between 1 and 30")
+        // stdout carries the raw video bytes; the JSON envelope would be
+        // appended to the same stream after execute() and corrupt it.
+        if json.enabled {
+            throw ValidationError("--json is not available on stream-video: stdout carries the raw video bytes and the envelope would corrupt the stream. The run summary is printed to stderr instead.")
         }
-        guard quality >= 1 && quality <= 100 else {
-            throw ValidationError("Quality must be between 1 and 100")
-        }
-        guard scale >= 0.1 && scale <= 1.0 else {
-            throw ValidationError("Scale must be between 0.1 and 1.0")
-        }
+        try VideoRecordingOptions.validateStreaming(fps: fps, quality: quality, scale: scale)
     }
 
     public func execute() async throws -> ExecutionResult {
@@ -236,44 +231,34 @@ public struct IOSSimStreamVideoCommand: SimUseExecutableCommand {
 
         do {
             let config = FBVideoStreamConfiguration(
-                encoding: .BGRA,
+                format: .bgra,
                 framesPerSecond: nil,
-                compressionQuality: NSNumber(value: Double(quality) / 100.0),
-                scaleFactor: NSNumber(value: scale),
-                avgBitrate: nil,
+                rateControl: .quality(Double(quality) / 100.0),
+                scaleFactor: scale,
                 keyFrameRate: nil
             )
 
             let stdoutConsumer = FBFileWriter.syncWriter(withFileDescriptor: STDOUT_FILENO, closeOnEndOfFile: false)
-            let videoStreamFuture = simulator.createStream(with: config)
-            let videoStream = try await FutureBridge.value(videoStreamFuture)
-            let startFuture = videoStream.startStreaming(stdoutConsumer)
+            // The stream comes back already running — attach failures throw
+            // here instead of surfacing asynchronously.
+            let videoStream = try await simulator.createStream(configuration: config, to: stdoutConsumer)
+            FileHandle.standardError.write(Data("BGRA stream is now running...\n".utf8))
 
-            // The private startStreaming future can resolve with an error at
-            // any point (attach failure during startup, or later), and the
-            // operation's `completed` future is the mid-stream termination
-            // channel. Neither has a continuation to resume — box the first
-            // error and let the wait loop below pick it up, so failures
-            // surface as a non-zero exit instead of a stderr line.
+            // Mid-stream termination surfaces through awaitCompletion();
+            // box the error and flip a flag so the cancellation-aware wait
+            // loop below picks both up, and failures surface as a non-zero
+            // exit instead of a stderr line.
             let streamError = FirstErrorBox()
-            startFuture.onQueue(BridgeQueues.videoStreamQueue, notifyOfCompletion: { future in
-                if let error = future.error {
-                    FileHandle.standardError.write(Data("Stream initialization error: \(error)\n".utf8))
-                    streamError.set(error)
-                }
-            })
-            videoStream.completed.onQueue(BridgeQueues.videoStreamQueue, notifyOfCompletion: { future in
-                if let error = future.error {
+            let streamEnded = CancellationFlag()
+            let completionTask = Task {
+                do {
+                    try await videoStream.awaitCompletion()
+                } catch {
                     FileHandle.standardError.write(Data("Stream terminated with error: \(error)\n".utf8))
                     streamError.set(error)
                 }
-            })
-
-            try await Task.sleep(nanoseconds: 1_000_000_000)
-            if let error = streamError.first {
-                throw error
+                streamEnded.cancel()
             }
-            FileHandle.standardError.write(Data("BGRA stream is now running...\n".utf8))
 
             while true {
                 if Task.isCancelled {
@@ -282,7 +267,7 @@ public struct IOSSimStreamVideoCommand: SimUseExecutableCommand {
                 if cancellationFlag.isCancelled() {
                     break
                 }
-                if streamError.first != nil {
+                if streamEnded.isCancelled() {
                     break
                 }
                 try? await cancellableSleep(seconds: 0.1, flag: cancellationFlag)
@@ -295,19 +280,9 @@ public struct IOSSimStreamVideoCommand: SimUseExecutableCommand {
             }
 
             FileHandle.standardError.write(Data("\nStopping BGRA stream...\n".utf8))
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                BridgeQueues.videoStreamQueue.async {
-                    let stopFuture = videoStream.stopStreaming()
-                    stopFuture.onQueue(BridgeQueues.videoStreamQueue, notifyOfCompletion: { future in
-                        FileHandle.standardError.write(Data("BGRA stream stopped\n".utf8))
-                        if let error = future.error {
-                            continuation.resume(throwing: error)
-                        } else {
-                            continuation.resume(returning: ())
-                        }
-                    })
-                }
-            }
+            try await videoStream.stopStreaming()
+            await completionTask.value
+            FileHandle.standardError.write(Data("BGRA stream stopped\n".utf8))
         } catch {
             throw CLIError(errorDescription: "Failed to stream BGRA video: \(error.localizedDescription)")
         }

@@ -119,7 +119,7 @@ struct Paste: SimUseExecutableCommand {
     var jsonOutput: Bool { json.enabled }
 
     mutating func resolveDeferredArguments() throws {
-        try device.resolve()
+        try device.resolve(allowPhysical: true)
     }
 
     var simulatorUDIDForDaemon: String? { device.resolved }
@@ -138,26 +138,47 @@ struct Paste: SimUseExecutableCommand {
     }
 
     func clientPreflight() async {
-        // iOS-only soft-keyboard probe — Android goes through
-        // ACTION_PASTE and has no equivalent HID-keyboard trap.
-        guard !PlatformRouter.looksLikeAndroid(device.resolved) else { return }
-        var sub = IOSSimPasteCommand()
-        sub.viaMenu = viaMenu
-        sub.device = device
-        sub.json = json
-        await sub.clientPreflight()
+        // Simulator-only soft-keyboard probe — Android goes through
+        // ACTION_PASTE, and physical iOS rejects in execute() before
+        // any simulator machinery could apply. Keyed off the same
+        // routing decision as execute() (`.none` falls through to the
+        // iOS backend there, so it keeps the probe).
+        switch PlatformRouter.resolve(udid: device.resolved) {
+        case .android, .iOSDevice:
+            return
+        case .iOSSim, .none:
+            await makeIOSSubcommand().clientPreflight()
+        }
     }
 
     func execute() async throws -> ExecutionResult {
         switch PlatformRouter.resolve(udid: device.resolved) {
         case .android:
             return try executeAndroid()
+        case .iOSDevice:
+            throw TargetCapabilityError.physicalIOS(
+                verb: "paste",
+                reason: "the accessibility audit channel exposes no pasteboard or text-input access.",
+                alternative: "Text input on physical iOS devices is not available yet. If the step only needs an activation, use `sim-use tap '#<id>' / --label`."
+            )
         case .iOSSim, .none:
             return try await executeIOSSim()
         }
     }
 
     private func executeIOSSim() async throws -> ExecutionResult {
+        let sub = makeIOSSubcommand()
+        return try await sub.execute()
+    }
+
+    /// Construct the backend command and copy every parsed flag across.
+    /// A missed field stays in ArgumentParser's wrapper-definition state
+    /// and traps on first read (#42) — pinned by
+    /// `ForwarderInitializationGuardTests`. Also feeds `clientPreflight`,
+    /// which previously copied only the three fields it read — a full
+    /// copy means the preflight can never trap if it starts reading
+    /// another field.
+    func makeIOSSubcommand() -> IOSSimPasteCommand {
         var sub = IOSSimPasteCommand()
         sub.text = text
         sub.useStdin = useStdin
@@ -171,7 +192,7 @@ struct Paste: SimUseExecutableCommand {
         sub.menuTimeout = menuTimeout
         sub.device = device
         sub.json = json
-        return try await sub.execute()
+        return sub
     }
 
     private func executeAndroid() throws -> ExecutionResult {

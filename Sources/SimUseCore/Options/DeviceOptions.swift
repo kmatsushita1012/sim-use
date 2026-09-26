@@ -50,11 +50,11 @@ public struct DeviceOptions: ParsableArguments {
     /// that would force every call-site to unwrap.
     public var resolved: String = ""
 
-    public init() {
-        self.device = nil
-        self.udid = nil
-        self.resolved = ""
-    }
+    /// Keep ArgumentParser's property wrappers in their initial state.
+    /// Explicitly assigning `@Option`-backed fields here marks them as
+    /// already parsed, then ArgumentParser traps while constructing a
+    /// command from CLI arguments.
+    public init() {}
 
     public init(device: String?, udid: String? = nil, resolved: String = "") {
         self.device = device
@@ -62,13 +62,28 @@ public struct DeviceOptions: ParsableArguments {
         self.resolved = resolved
     }
 
-    public mutating func resolve() throws {
+    /// `allowPhysical` marks the caller as physical-iOS-aware: the 14
+    /// top-level cross-platform verbs pass `true` and route (or reject
+    /// per-verb via `TargetCapabilityError`) in their platform switch.
+    /// The `sim-use ios <verb>` namespace keeps the default `false` —
+    /// it is simulator-only by contract, so a physical UDID still
+    /// fast-fails here with a pointer to the routed surface instead of
+    /// surfacing as a confusing "simulator not found" deep in
+    /// FBSimulatorControl.
+    public mutating func resolve(allowPhysical: Bool = false) throws {
         let explicit = try Self.selectExplicit(device: device, udid: udid)
         if let arg = explicit, PlatformRouter.looksLikeAndroid(arg) {
             resolved = arg
             return
         }
-        resolved = try DeviceResolver.resolve(explicit: explicit)
+        let candidate = try DeviceResolver.resolve(explicit: explicit)
+        // Checked on the resolved value, not just the explicit flag, so a
+        // physical UDID arriving via SIM_USE_DEVICE / SIM_USE_UDID is
+        // treated identically.
+        guard allowPhysical || !PlatformRouter.looksLikePhysicalIOSDevice(candidate) else {
+            throw PhysicalIOSDeviceError(identifier: candidate)
+        }
+        resolved = candidate
     }
 
     /// Apply the same `--device` / `--udid` mutual-exclusion rule used
