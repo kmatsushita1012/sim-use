@@ -130,6 +130,28 @@ struct PublicAPIVisibilityTests {
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
+
+        do {
+            try await client.send([.applePay], on: "SIM-1")
+            Issue.record("Expected unavailable Apple Pay input to fail")
+        } catch let error as SimUseError {
+            guard case let .backend(message, hint) = error else {
+                Issue.record("Unexpected error: \(error)")
+                return
+            }
+            #expect(message == "Apple Pay simulator input is unavailable in this release.")
+            #expect(hint == "Use a supported simulator hardware action instead.")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test("native shake and named hardware events are public")
+    func namedHIDEventsArePublic() {
+        let shake: HIDEvent = .shake
+        let events: [HIDEvent] = [.applePay, .sideButton, .siri]
+        _ = shake
+        #expect(events.count == 3)
     }
 
     private func requirePublicType<T>(_ type: T.Type) {

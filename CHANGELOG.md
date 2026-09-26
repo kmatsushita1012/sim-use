@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Restored the `SimUseKit` macOS library product after synchronizing with
   upstream v0.14.0, retaining the application-facing typed requests, HID
   sessions, and direct video stream API alongside the new upstream backends.
+- Added native iOS/iPadOS Simulator Shake through `button shake` and the
+  application-facing `HIDEvent.shake` API.
+- Added named `SimUseKit` HID events for Apple Pay, side-button, and Siri
+  presses. They remain deprecated until the simulator runtime support is
+  available reliably.
 
 ### Changed
 
@@ -26,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lifecycle, matching the simulator's recognized input path.
 - `DescribeUIRequest` now derives its public screen geometry from the booted
   simulator when the accessibility response contains a zero-size shell.
+- `GesturePreset` is explicitly exported by `SimUseKit`, so application
+  clients do not need to import an implementation target.
+- Deprecated `HIDEvent.applePay` now fails predictably before HID event
+  dispatch, rather than surfacing a transport-specific runtime error.
 
 ## [0.14.0] - 2026-08-27
 

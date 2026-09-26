@@ -52,6 +52,8 @@ struct ContentView: View {
             TapTestView()
         case "touch-control":
             TouchControlView()
+        case "map-test":
+            MapTestView()
         case "gesture-presets":
             GesturePresetsView()
             
@@ -98,6 +100,7 @@ struct MainMenuView: View {
         ("Touch & Gestures", [
             ("tap-test", "Tap Test", "Displays coordinates of CLI taps"),
             ("touch-control", "Touch Control", "Touch down/up events"),
+            ("map-test", "Map Touch Test", "Visualize repeated touchDownAt drag"),
             ("swipe-test", "Swipe Test", "Shows CLI swipe paths"),
             ("gesture-presets", "Gesture Presets", "Multi-touch gesture display")
         ]),

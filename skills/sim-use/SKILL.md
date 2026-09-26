@@ -76,6 +76,10 @@ Every byte of command output you read costs context. Defaults that keep the loop
 | Type text | `sim-use type 'hello' --device <UDID>` |
 | Paste unicode | `sim-use paste 'こんにちは 🎉' --device <UDID>` (iOS: needs hardware keyboard) |
 | Hardware button | `sim-use button home --device <UDID>` |
+| iOS Apple Pay | `sim-use button apple-pay --device <UDID>` |
+| iOS side button | `sim-use button side-button --device <UDID>` |
+| iOS Siri | `sim-use button siri --device <UDID>` |
+| iOS Shake | `sim-use button shake --device <UDID>` |
 | Android back | `sim-use button back --device <UDID>` |
 | Wait for animation | `sleep 0.4` between commands, or `--pre-delay 0.5` |
 | Toggle/switch | `sim-use tap @N --duration 0.05 --device <UDID>` (UISwitch needs a brief hold) |

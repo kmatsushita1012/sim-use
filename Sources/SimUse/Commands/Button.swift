@@ -21,7 +21,7 @@ struct Button: SimUseExecutableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Press a hardware button on the simulator or Android device.",
         discussion: """
-        iOS:     home, lock, apple-pay, side-button, siri
+        iOS:     home, lock, apple-pay, side-button, siri, shake
         Android: home, back, lock, recents
 
         Examples:

@@ -33,6 +33,11 @@ struct ButtonTests {
         // Note: Side button behavior varies by device
         // This test verifies the command executes without error
     }
+
+    @Test("Native Shake gesture")
+    func shakePress() async throws {
+        try await TestHelpers.runSimUseCommand("button shake", simulatorUDID: defaultSimulatorUDID)
+    }
     
     @Test("Button press with duration")
     func buttonPressWithDuration() async throws {
