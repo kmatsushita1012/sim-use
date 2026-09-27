@@ -237,6 +237,21 @@ private final class SimulatorWorker {
             for (index, event) in events.enumerated() {
                 if case .shake = event {
                     try SimulatorShake.perform(in: session)
+                } else if case let .tap(x, y) = event {
+                    // `tapAt` is accepted by the Device Hub transport but
+                    // can be dropped before UIKit observes it. Mirror the
+                    // CLI path and send the complete press lifecycle through
+                    // this one cached session instead.
+                    try await HIDInteractor.performHIDEvent(
+                        .touch(direction: .down, x: x, y: y),
+                        in: session,
+                        logger: logger
+                    )
+                    try await HIDInteractor.performHIDEvent(
+                        .touch(direction: .up, x: x, y: y),
+                        in: session,
+                        logger: logger
+                    )
                 } else if let backendEvent = event.makeBackendEvent() {
                     try await HIDInteractor.performHIDEvent(
                         backendEvent,

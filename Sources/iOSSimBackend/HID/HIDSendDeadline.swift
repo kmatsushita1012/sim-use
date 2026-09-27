@@ -37,9 +37,10 @@ enum HIDSendDeadline {
     /// dies mid-command, and equivalent to the pre-migration FBFuture
     /// bridge, whose cancel resolved the wrapper future while the
     /// underlying mach send kept dangling.
+    @MainActor
     static func run<T: Sendable>(
         milliseconds: UInt64,
-        operation: @escaping @Sendable () async throws -> T,
+        operation: @escaping @MainActor @Sendable () async throws -> T,
         onTimeout makeTimeoutError: @escaping @Sendable () -> Error
     ) async throws -> T {
         // Saturate instead of trapping on the ms→ns conversion: any
@@ -90,7 +91,7 @@ enum HIDSendDeadline {
                 return
             }
 
-            let operationTask = Task {
+            let operationTask = Task { @MainActor in
                 let result: Result<T, Error>
                 do {
                     result = .success(try await operation())

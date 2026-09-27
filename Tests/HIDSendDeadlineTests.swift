@@ -23,6 +23,17 @@ struct HIDSendDeadlineTests {
         #expect(value == 42)
     }
 
+    @Test("The HID operation stays on MainActor")
+    func operationRunsOnMainActor() async throws {
+        let value = try await HIDSendDeadline.run(milliseconds: 5_000) {
+            MainActor.preconditionIsolated()
+            return true
+        } onTimeout: {
+            TimeoutMarker()
+        }
+        #expect(value)
+    }
+
     @Test("An overflowing millisecond value saturates instead of trapping")
     func hugeTimeoutSaturates() async throws {
         // Any parseable SIM_USE_HID_SEND_TIMEOUT_MS reaches the ms→ns
