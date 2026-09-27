@@ -22,7 +22,7 @@ public struct IOSSimPasteCommand: SimUseExecutableCommand {
         commandName: "paste",
         abstract: "Paste text into the focused field via the simulator pasteboard (bypasses IME).",
         discussion: """
-        Writes the text to the simulator pasteboard with `simctl pbcopy` and
+        Writes the text through the in-process Simulator pasteboard bridge and
         triggers Cmd+V. Characters reach the responder chain without going
         through the keyboard, so IME composition (e.g. Japanese kana) cannot
         munge ASCII input and arbitrary Unicode is safe.
@@ -179,7 +179,7 @@ public struct IOSSimPasteCommand: SimUseExecutableCommand {
         }
 
         logger.info().log("Writing \(inputText.utf8.count) byte(s) to simulator pasteboard")
-        try Self.writeSimulatorPasteboard(text: inputText, udid: device.resolved)
+        try await IOSSimulatorPasteboard.write(text: inputText, udid: device.resolved)
 
         if viaMenu {
             let (target, calibration) = try await resolveTargetPoint(logger: logger)
@@ -362,36 +362,6 @@ public struct IOSSimPasteCommand: SimUseExecutableCommand {
             }
         default:
             throw ValidationError("Invalid input configuration.")
-        }
-    }
-
-    // MARK: - Pasteboard write
-
-    /// Run `simctl pbcopy` to write the simulator pasteboard. Exposed
-    /// `static` so the `paste` batch step (BatchConvertible) can reuse
-    /// the same path without spinning up a fresh command instance.
-    public static func writeSimulatorPasteboard(text: String, udid: String) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        process.arguments = ["simctl", "pbcopy", udid]
-
-        let stdinPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardInput = stdinPipe
-        process.standardError = stderrPipe
-        process.standardOutput = Pipe()
-
-        try process.run()
-        if let data = text.data(using: .utf8) {
-            stdinPipe.fileHandleForWriting.write(data)
-        }
-        try stdinPipe.fileHandleForWriting.close()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            let message = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown error"
-            throw CLIError(errorDescription: "simctl pbcopy failed (exit \(process.terminationStatus)): \(message)")
         }
     }
 

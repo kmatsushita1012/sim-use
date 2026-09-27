@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 import FBSimulatorControl
+@preconcurrency import FBControlCore
 import SimUseCore
 import iOSSimBackend
 
@@ -101,6 +102,32 @@ public final class SimUseClient {
         }
         workers.removeAll()
         HIDInteractor.clearHIDConnections()
+    }
+
+    /// Lists iOS Simulators through FBSimulatorControl's direct
+    /// CoreSimulator bridge.
+    public func listSimulators(includeAll: Bool = false) async throws -> [Device] {
+        let logger = SimUseLogger()
+        try await performGlobalSetup(logger: logger)
+        let simulatorSet = try await getSimulatorSet(
+            deviceSetPath: nil,
+            logger: logger,
+            reporter: EmptyEventReporter.shared
+        )
+        let devices = simulatorSet.allSimulators.map { simulator in
+            Device(
+                udid: simulator.udid,
+                name: simulator.name,
+                platform: .ios,
+                kind: .simulator,
+                state: FBiOSTargetStateStringFromState(simulator.state).rawValue,
+                runtime: simulator.osVersion.name.rawValue
+            )
+        }
+        if includeAll {
+            return devices.sorted { $0.udid < $1.udid }
+        }
+        return devices.filter { $0.isUsable }.sorted { $0.udid < $1.udid }
     }
 
     func resetLiveness(for deviceID: SimulatorID, to snapshot: AppSnapshot) async {

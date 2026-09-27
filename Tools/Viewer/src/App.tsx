@@ -250,7 +250,7 @@ export default function App() {
               })}
             </select>
           </label>
-          <button onClick={refreshDevices} title="Reload booted device list (iOS Simulators + Android emulators)">
+          <button onClick={refreshDevices} title="Reload device list (iOS Simulators + Android devices)">
             ↻ devices
           </button>
         </div>

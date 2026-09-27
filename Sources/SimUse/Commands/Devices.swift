@@ -5,6 +5,7 @@ import SimUseCore
 import AndroidBackend
 import iOSSimBackend
 import iOSDeviceBackend
+import SimUseKit
 
 /// Cross-platform device listing. Successor to the legacy
 /// `list-simulators` (iOS-only) and `android devices` verbs, which
@@ -14,7 +15,7 @@ struct Devices: SimUseExecutableCommand {
         commandName: "devices",
         abstract: "List connected devices across iOS Simulators, Android devices and physical iPhones/iPads.",
         discussion: """
-        Aggregates `xcrun simctl list devices` (iOS Simulators),
+        Aggregates the direct Swift Simulator bridge (iOS Simulators),
         `adb devices` (Android devices / emulators) and FBDeviceControl
         discovery (physical iPhones / iPads over USB) into a single
         unified table. `kind` distinguishes the carrier — simulator,
@@ -110,7 +111,7 @@ struct Devices: SimUseExecutableCommand {
         // more actionable than "No devices found".
         if combined.isEmpty, iosResult.failed, androidResult.failed, physicalResult.failed, platform == nil {
             FileHandle.standardError.write(Data(
-                "warning: iOS (simctl), Android (adb) and physical-iOS (FBDeviceControl) listings all failed; pass --platform ios|android to scope, or install the missing tooling.\n".utf8
+                "warning: iOS (CoreSimulator), Android (adb) and physical-iOS (FBDeviceControl) listings all failed; pass --platform ios|android to scope, or install the missing tooling.\n".utf8
             ))
         }
         return ExecutionResult(devices: combined)
@@ -127,14 +128,13 @@ struct Devices: SimUseExecutableCommand {
     }
 
     private func listIOS() async -> SideResult {
-        // If --platform=android, skip the simctl call entirely.
+        // If --platform=android, skip the iOS bridge entirely.
         if platform == .android { return SideResult(devices: [], failed: false) }
         do {
-            // We always fetch the full list (not `simctl ... booted`)
-            // because the `--all` flag changes intent at runtime and
-            // the cost of the wider query is small compared to the
-            // process spawn itself.
-            let devices = try SimctlDeviceLister.listDevices(bootedOnly: false)
+            // Fetch the full list once because the `--all` flag changes
+            // filtering intent at runtime. SimUseClient talks to
+            // FBSimulatorControl in-process; no simulator CLI is spawned.
+            let devices = try await SimUseClient().listSimulators(includeAll: true)
             return SideResult(devices: devices, failed: false)
         } catch {
             FileHandle.standardError.write(Data("warning: iOS device listing failed: \(error.localizedDescription)\n".utf8))

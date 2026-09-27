@@ -170,7 +170,7 @@ sim-use devices
 UDID="B34FF305-5EA8-412B-943F-1D0371CA17FF"
 ```
 
-One listing covers every target: iOS Simulators (`simctl`), Android devices and emulators (`adb`), and USB-attached physical iPhones/iPads (`FBDeviceControl`). `KIND` — `simulator` / `emulator` / `physical` — is orthogonal to `PLATFORM` and also appears as `kind` in `--json`; capabilities follow the kind (see [Physical iOS devices](#physical-ios-devices) for what physical iOS supports). `--no-physical-ios` skips the FBDeviceControl side entirely (~1 s saved when no device is attached) — the Viewer passes it, since it drives coordinate taps and video streaming, neither of which physical iOS supports.
+One listing covers every target: iOS Simulators (CoreSimulator), Android devices and emulators (`adb`), and USB-attached physical iPhones/iPads (`FBDeviceControl`). `KIND` — `simulator` / `emulator` / `physical` — is orthogonal to `PLATFORM` and also appears as `kind` in `--json`; capabilities follow the kind (see [Physical iOS devices](#physical-ios-devices) for what physical iOS supports). `--no-physical-ios` skips the FBDeviceControl side entirely (~1 s saved when no device is attached). The Viewer lists usable iOS Simulators and Android devices directly and excludes physical iOS, which cannot provide its coordinate-based UI.
 
 ### Touch & gestures
 
@@ -208,7 +208,7 @@ sim-use type --file input.txt --device $UDID
 
 ### Paste (IME-safe Unicode)
 
-`sim-use paste` writes text to the simulator pasteboard (`simctl pbcopy`) and issues Cmd+V, so characters reach the focused field without going through the keyboard. This bypasses host IME composition (e.g. Japanese kana remapping ASCII keys) and accepts arbitrary Unicode the HID keycode table cannot express (CJK, emoji, diacritics).
+`sim-use paste` writes text through the in-process Swift Simulator pasteboard bridge and issues Cmd+V, so characters reach the focused field without going through the keyboard. This bypasses host IME composition (e.g. Japanese kana remapping ASCII keys) and accepts arbitrary Unicode the HID keycode table cannot express (CJK, emoji, diacritics).
 
 ```bash
 sim-use paste 'ABC 日本語 🎉' --device $UDID             # at caret

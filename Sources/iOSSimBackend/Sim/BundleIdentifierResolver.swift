@@ -1,23 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
+import Darwin
 import Foundation
+import ObjectiveC
 import SimUseCore
 
 /// Resolves the `CFBundleIdentifier` of a simulator's frontmost app.
 ///
 /// Strategy: read the AX-root element's `pid` (every AX node carries
 /// `pid` per the FBSimulatorControl serializer), then look the pid up
-/// against `xcrun simctl spawn <udid> launchctl list`. Each row is
+/// against the Simulator's CoreSimulator `SimDevice.spawn` API. Each row is
 /// `<pid> <status> UIKitApplication:<bundleId>[xxxx][xxxx]` for hosted
 /// apps; we extract the bundle id from the label.
 ///
-/// Returns empty string when the AX root has no pid, when simctl is
+/// Returns empty string when the AX root has no pid, when the Simulator is
 /// unreachable, or when the pid isn't a UIKitApplication. `describe-ui`
 /// treats appPackage as hint-grade, not authoritative — failing to
 /// resolve is non-fatal.
 public enum BundleIdentifierResolver {
 
-    /// Production resolver. Pulls pid from the root element and shells
-    /// out to simctl.
+    /// Production resolver. Pulls pid from the root element and asks the
+    /// target SimDevice's private process-inspection service.
     public static func resolve(udid: String, rootElement: AccessibilityElement?) -> String {
         guard let pid = rootElement?.pid, pid > 0 else { return "" }
         guard let output = try? runLaunchctlList(udid: udid) else { return "" }
@@ -90,10 +92,10 @@ public enum BundleIdentifierResolver {
     }
 
     /// Build an `AppSnapshot` of the simulator's live hosted apps.
-    /// Returns `nil` when the `launchctl` spawn fails or times out — a
+    /// Returns `nil` when the private process inspection fails or times out — a
     /// probe failure is "unknown", distinct from a genuinely empty device.
     /// The liveness tracker treats `nil` as "skip this command" rather
-    /// than "everything died", so a transient simctl hiccup can't fake a
+    /// than "everything died", so a transient Simulator bridge hiccup can't fake a
     /// mass disappearance (issue #81).
     public static func appSnapshot(udid: String) -> AppSnapshot? {
         guard let output = try? runLaunchctlList(udid: udid) else {
@@ -145,9 +147,9 @@ public enum BundleIdentifierResolver {
         return String(trimmed)
     }
 
-    // MARK: - simctl bridge
+    // MARK: - CoreSimulator bridge
 
-    /// `simctl spawn` can wedge if the target simulator is
+    /// A device spawn can wedge if the target simulator is
     /// mid-boot / mid-shutdown — `waitUntilExit()` then blocks the
     /// describe-ui path indefinitely. The pid-resolution itself is
     /// strictly best-effort (`describe-ui` treats appPackage as a
@@ -157,35 +159,229 @@ public enum BundleIdentifierResolver {
     private static let launchctlTimeout: TimeInterval = 5
 
     private static func runLaunchctlList(udid: String) throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        process.arguments = ["simctl", "spawn", udid, "launchctl", "list"]
+        guard let device = findSimulator(udid: udid) else {
+            throw NSError(
+                domain: "BundleIdentifierResolver",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Simulator \(udid) was not found."]
+            )
+        }
+
         let stdoutPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = Pipe()
-        try process.run()
-        let deadline = Date().addingTimeInterval(launchctlTimeout)
-        while process.isRunning {
-            if Date() >= deadline {
-                process.terminate()
-                // Give the child a brief settle so the FDs reap
-                // cleanly. Mirrors `Adb.run`'s timeout pattern.
-                let killDeadline = Date().addingTimeInterval(0.5)
-                while process.isRunning, Date() < killDeadline {
-                    Thread.sleep(forTimeInterval: 0.02)
-                }
-                throw NSError(
-                    domain: "BundleIdentifierResolver",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "simctl spawn timed out after \(launchctlTimeout)s"]
-                )
+        let stderrPipe = Pipe()
+        let options = NSMutableDictionary()
+        options.setObject(
+            NSArray(array: ["launchctl", "list"]),
+            forKey: "arguments" as NSString
+        )
+        options.setObject(
+            NSNumber(value: stdoutPipe.fileHandleForWriting.fileDescriptor),
+            forKey: "stdout" as NSString
+        )
+        options.setObject(
+            NSNumber(value: stderrPipe.fileHandleForWriting.fileDescriptor),
+            forKey: "stderr" as NSString
+        )
+        options.setObject(NSNumber(value: true), forKey: "standalone" as NSString)
+
+        let outputLock = NSLock()
+        var stdoutData = Data()
+        var stderrData = Data()
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            outputLock.lock()
+            stdoutData.append(chunk)
+            outputLock.unlock()
+        }
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            outputLock.lock()
+            stderrData.append(chunk)
+            outputLock.unlock()
+        }
+
+        let finished = DispatchSemaphore(value: 0)
+        let statusLock = NSLock()
+        var status: Int32 = -1
+        let terminationHandler: @convention(block) (Int32) -> Void = { value in
+            statusLock.lock()
+            status = value
+            statusLock.unlock()
+            finished.signal()
+        }
+
+        let selector = NSSelectorFromString(
+            "spawnWithPath:options:terminationQueue:terminationHandler:pid:error:"
+        )
+        guard class_getInstanceMethod(type(of: device), selector) != nil else {
+            throw NSError(
+                domain: "BundleIdentifierResolver",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "CoreSimulator does not expose SimDevice.spawn."]
+            )
+        }
+        guard let message = dynamicSymbol(named: "objc_msgSend") else {
+            throw NSError(
+                domain: "BundleIdentifierResolver",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Objective-C messaging is unavailable."]
+            )
+        }
+        typealias Spawn = @convention(c) (
+            AnyObject,
+            Selector,
+            NSString,
+            NSDictionary?,
+            AnyObject?,
+            AnyObject?,
+            UnsafeMutablePointer<Int32>?,
+            UnsafeMutablePointer<NSError?>?
+        ) -> Bool
+        let spawn = unsafeBitCast(message, to: Spawn.self)
+        var pid: Int32 = 0
+        var spawnError: NSError?
+        let terminationHandlerObject = unsafeBitCast(terminationHandler, to: AnyObject.self)
+        let succeeded = spawn(
+            device,
+            selector,
+            "/bin/launchctl",
+            options,
+            nil,
+            terminationHandlerObject,
+            &pid,
+            &spawnError
+        )
+        stdoutPipe.fileHandleForWriting.closeFile()
+        stderrPipe.fileHandleForWriting.closeFile()
+
+        guard succeeded else {
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            throw spawnError ?? NSError(
+                domain: "BundleIdentifierResolver",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "CoreSimulator failed to run launchctl."]
+            )
+        }
+        guard finished.wait(timeout: .now() + launchctlTimeout) == .success else {
+            let signalSent = terminateSpawnedProcess(device: device, pid: pid)
+            let reaped = finished.wait(timeout: .now() + 0.5) == .success
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            if reaped {
+                _ = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                _ = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            } else {
+                stdoutPipe.fileHandleForReading.closeFile()
+                stderrPipe.fileHandleForReading.closeFile()
             }
-            Thread.sleep(forTimeInterval: 0.02)
+            let terminationMessage = (signalSent || reaped)
+                ? ""
+                : " CoreSimulator could not terminate the spawned process."
+            throw NSError(
+                domain: "BundleIdentifierResolver",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "Simulator launchctl timed out after \(launchctlTimeout)s.\(terminationMessage)"]
+            )
         }
-        guard process.terminationStatus == 0 else {
-            throw NSError(domain: "BundleIdentifierResolver", code: Int(process.terminationStatus))
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
+        let stdoutRemainder = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrRemainder = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        outputLock.lock()
+        stdoutData.append(stdoutRemainder)
+        stderrData.append(stderrRemainder)
+        let output = stdoutData
+        let errorOutput = stderrData
+        outputLock.unlock()
+
+        statusLock.lock()
+        let exitStatus = status
+        statusLock.unlock()
+        guard exitStatus == 0 else {
+            throw NSError(
+                domain: "BundleIdentifierResolver",
+                code: Int(exitStatus),
+                userInfo: [NSLocalizedDescriptionKey: String(data: errorOutput, encoding: .utf8) ?? ""]
+            )
         }
-        let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? ""
+        return String(data: output, encoding: .utf8) ?? ""
+    }
+
+    private static func terminateSpawnedProcess(device: NSObject, pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
+        let selector = NSSelectorFromString("sendSignalToProcess:signal:error:")
+        guard class_getInstanceMethod(type(of: device), selector) != nil,
+              let message = dynamicSymbol(named: "objc_msgSend")
+        else {
+            return false
+        }
+        typealias Signal = @convention(c) (
+            AnyObject,
+            Selector,
+            Int32,
+            Int32,
+            UnsafeMutablePointer<NSError?>?
+        ) -> Bool
+        let sendSignal = unsafeBitCast(message, to: Signal.self)
+        var error: NSError?
+        return sendSignal(device, selector, pid, Int32(SIGKILL), &error)
+    }
+
+    private static func dynamicSymbol(named name: String) -> UnsafeMutableRawPointer? {
+        let defaultHandle = UnsafeMutableRawPointer(bitPattern: UInt.max - 1)
+        return dlsym(defaultHandle, name)
+    }
+
+    private static func findSimulator(udid: String) -> NSObject? {
+        loadCoreSimulator()
+        guard let contextClass = NSClassFromString("SimServiceContext") as? NSObject.Type else {
+            return nil
+        }
+        let contextSelector = NSSelectorFromString("sharedServiceContextForDeveloperDir:error:")
+        guard let context = contextClass.perform(
+            contextSelector,
+            with: developerDirectory,
+            with: nil
+        )?.takeUnretainedValue() as? NSObject else {
+            return nil
+        }
+        let deviceSetSelector = NSSelectorFromString("defaultDeviceSetWithError:")
+        guard let deviceSet = context.perform(deviceSetSelector, with: nil)?
+            .takeUnretainedValue() as? NSObject,
+              let devices = deviceSet.value(forKey: "devices") as? [NSObject]
+        else {
+            return nil
+        }
+        return devices.first {
+            ($0.value(forKey: "UDID") as? NSUUID)?.uuidString == udid
+        }
+    }
+
+    private static var developerDirectory: String {
+        let environment = ProcessInfo.processInfo.environment
+        if let value = environment["DEVELOPER_DIR"], !value.isEmpty {
+            return value
+        }
+        if let selected = try? FileManager.default
+            .destinationOfSymbolicLink(atPath: "/var/db/xcode_select_link"),
+           !selected.isEmpty
+        {
+            return selected
+        }
+        return "/Applications/Xcode.app/Contents/Developer"
+    }
+
+    private static func loadCoreSimulator() {
+        let paths = [
+            "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/CoreSimulator",
+            "\(developerDirectory)/Library/PrivateFrameworks/CoreSimulator.framework/CoreSimulator",
+        ]
+        for path in paths {
+            _ = dlopen(path, RTLD_NOW | RTLD_LOCAL)
+        }
     }
 }

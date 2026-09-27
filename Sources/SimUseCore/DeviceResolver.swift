@@ -13,9 +13,8 @@ import Foundation
 ///   3. Exactly one live sim-use daemon under `/tmp/sim-use-<uid>/` — the
 ///      "you've been working on this simulator already" steady-state path.
 ///      Cost: <1 ms (a directory scan + a few stat() calls).
-///   4. Exactly one simulator with `state == "Booted"` per
-///      `xcrun simctl list devices booted -j`. Cost: ~150 ms (one
-///      forked subprocess).
+///   4. Exactly one simulator with `state == "Booted"` from the direct
+///      CoreSimulator bridge.
 ///
 /// 0 / >1 results at step 3 fall through to step 4. 0 / >1 booted at
 /// step 4 surface a `ResolutionError` with the list of booted UDIDs so
@@ -31,7 +30,7 @@ public struct DeviceResolver {
         public var errorDescription: String? {
             switch self {
             case .noSimulatorBooted:
-                return "No simulator is booted. Boot one in Simulator.app (or with `xcrun simctl boot <UDID>`) and retry, or pass `--device <UDID>` explicitly."
+                return "No simulator is booted. Boot one in Simulator.app and retry, or pass `--device <UDID>` explicitly."
             case .multipleSimulatorsBooted(let udids, let names):
                 // Inline the booted list directly into the error message so
                 // the user sees actionable info without having to look at
@@ -42,7 +41,7 @@ public struct DeviceResolver {
                 }.joined(separator: "; ")
                 return "Multiple simulators are booted (\(udids.count)): \(formatted). Pass `--device <UDID>` or set the SIM_USE_DEVICE environment variable to disambiguate."
             case .simctlFailed(let message):
-                return "Failed to list booted simulators via simctl: \(message). Pass `--device <UDID>` explicitly to skip auto-resolution."
+                return "Failed to list booted simulators through the CoreSimulator bridge: \(message). Pass `--device <UDID>` explicitly to skip auto-resolution."
             case .conflictingEnvVars:
                 return "Both SIM_USE_DEVICE and SIM_USE_UDID are set. Unset one — they are aliases."
             }
@@ -62,10 +61,12 @@ public struct DeviceResolver {
         }
     }
 
-    /// Source of booted-simulator information. Prod uses `simctl`; tests
+    /// Source of booted-simulator information. Production uses CoreSimulator;
+    /// tests
     /// inject a fixture closure so the resolver can be unit-tested without
     /// a real Xcode toolchain on the box.
     public typealias BootedListProvider = () throws -> [BootedSimulator]
+    public typealias AsyncBootedListProvider = () async throws -> [BootedSimulator]
 
     public struct BootedSimulator: Equatable {
         public let udid: String
@@ -77,11 +78,57 @@ public struct DeviceResolver {
         }
     }
 
+    /// Installs the host application's direct iOS discovery implementation.
+    /// The executable wires this to FBSimulatorControl before ArgumentParser
+    /// runs. The CoreSimulator runtime fallback remains available to clients
+    /// that use `SimUseCore` without the iOS backend target.
+    public static func installBootedListProvider(_ provider: BootedListProvider?) {
+        providerLock.lock()
+        installedBootedListProvider = provider
+        providerLock.unlock()
+    }
+
+    /// Installs an asynchronous provider used by the executable's preflight.
+    /// It runs after ArgumentParser has created the command, allowing the
+    /// FBSimulatorControl actor/client to initialize normally while keeping
+    /// `DeviceResolver.resolve` synchronous for library compatibility.
+    public static func installAsyncBootedListProvider(_ provider: AsyncBootedListProvider?) {
+        providerLock.lock()
+        installedAsyncBootedListProvider = provider
+        providerLock.unlock()
+    }
+
+    /// Preloads the direct iOS provider only for commands whose implicit
+    /// target is an iOS Simulator. Android and non-device commands return
+    /// without touching the iOS bridge.
+    public static func prepareAutomaticResolution(arguments: [String]) async {
+        let tail = Array(arguments.dropFirst())
+        guard let command = tail.first,
+              command != "android",
+              command == "ios"
+                || [
+                    "describe-ui", "ui", "tap", "long-press", "type", "paste",
+                    "keyboard-state", "swipe", "button", "touch", "gesture",
+                    "multi-touch", "record-video", "screenshot", "app-state"
+                ].contains(command),
+              !tail.contains(where: {
+                  $0 == "--device" || $0 == "--udid"
+                      || $0.hasPrefix("--device=") || $0.hasPrefix("--udid=")
+              })
+        else {
+            return
+        }
+
+        guard let provider = configuredAsyncBootedListProvider() else { return }
+        guard let devices = try? await provider() else { return }
+        installBootedListProvider { devices }
+    }
+
     public static func resolve(
         explicit: String?,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         baseDirectory: URL? = nil,
-        bootedListProvider: BootedListProvider = simctlBootedListProvider
+        bootedListProvider: BootedListProvider? = nil
     ) throws -> String {
         // 1. Explicit --device / --udid wins, after a trim so a stray
         // space doesn't accidentally bypass auto-resolution.
@@ -106,7 +153,7 @@ public struct DeviceResolver {
         }
 
         // 3. Single live daemon — steady-state fast path. After the first
-        // command in an agent session this hits and avoids the simctl fork.
+        // command in an agent session this hits and avoids device discovery.
         // A base directory that fails validation throws here: resolution
         // must not be steered by forged pidfiles in a pre-planted tree.
         let daemons = try DaemonPaths.enumerateLiveDaemons(baseDirectory: baseDirectory)
@@ -114,11 +161,11 @@ public struct DeviceResolver {
             return daemons[0].udid
         }
 
-        // 4. Cold path: ask simctl. The provider is injectable so tests
+        // 4. Cold path: ask CoreSimulator. The provider is injectable so tests
         // do not need an Xcode toolchain on the box.
         let booted: [BootedSimulator]
         do {
-            booted = try bootedListProvider()
+            booted = try (bootedListProvider ?? configuredBootedListProvider())()
         } catch let error as ResolutionError {
             throw error
         } catch {
@@ -139,34 +186,31 @@ public struct DeviceResolver {
         }
     }
 
-    /// Production booted-list provider. Spawns `xcrun simctl list devices
-    /// booted -j` and parses the JSON. Errors map to `ResolutionError.simctlFailed`.
+    /// Production booted-list provider. Reads the private CoreSimulator
+    /// device set directly; the historical property name and error case are
+    /// retained for source compatibility with existing clients.
     public static let simctlBootedListProvider: BootedListProvider = {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        process.arguments = ["simctl", "list", "devices", "booted", "-j"]
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-        } catch {
-            throw ResolutionError.simctlFailed(message: "could not spawn simctl: \(error.localizedDescription)")
+        try CoreSimulatorDeviceDiscovery.bootedDevices().map {
+            BootedSimulator(udid: $0.udid, name: $0.name)
         }
-        process.waitUntilExit()
+    }
 
-        guard process.terminationStatus == 0 else {
-            let stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            throw ResolutionError.simctlFailed(
-                message: "simctl exited \(process.terminationStatus): \(stderr.trimmingCharacters(in: .whitespacesAndNewlines))"
-            )
-        }
+    private static let providerLock = NSLock()
+    private static var installedBootedListProvider: BootedListProvider?
+    private static var installedAsyncBootedListProvider: AsyncBootedListProvider?
 
-        let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        return try parseSimctlBootedJSON(data)
+    private static func configuredBootedListProvider() -> BootedListProvider {
+        providerLock.lock()
+        let provider = installedBootedListProvider
+        providerLock.unlock()
+        return provider ?? simctlBootedListProvider
+    }
+
+    private static func configuredAsyncBootedListProvider() -> AsyncBootedListProvider? {
+        providerLock.lock()
+        let provider = installedAsyncBootedListProvider
+        providerLock.unlock()
+        return provider
     }
 
     /// Append `--device <value>` to `args` when neither `--device` nor
@@ -189,12 +233,12 @@ public struct DeviceResolver {
         return args + ["--device", device]
     }
 
-    /// Parses the JSON shape emitted by `simctl list devices booted -j`:
+    /// Parses the legacy device-list JSON shape for source compatibility.
     ///
     ///   { "devices": { "<runtime>": [ { "udid": "...", "name": "...", ... }, ... ], ... } }
     ///
-    /// Only `state == "Booted"` devices show up under `booted`, so we
-    /// flatten across runtimes and trust simctl's filter.
+    /// The direct provider does not use this parser; it remains available for
+    /// callers that still have a previously captured device-list payload.
     public static func parseSimctlBootedJSON(_ data: Data) throws -> [BootedSimulator] {
         struct Device: Decodable {
             public let udid: String

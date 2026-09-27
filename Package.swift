@@ -201,6 +201,7 @@ let package = Package(
                 "AndroidBackend",
                 "iOSSimBackend",
                 "iOSDeviceBackend",
+                "SimUseKit",
                 "FBSimulatorControl",
                 "FBControlCore",
                 "XCTestBootstrap",

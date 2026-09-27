@@ -17,11 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added named `SimUseKit` HID events for Apple Pay, side-button, and Siri
   presses. They remain deprecated until the simulator runtime support is
   available reliably.
+- Added `PasteRequest` for direct Unicode paste through CoreSimulator.
 
 ### Changed
 
 - `SimUseKit` now builds and links with the static idb XCFramework layout
   introduced by upstream v0.14.0.
+- iOS Viewer operations, simulator discovery, pasteboard writes, and
+  foreground bundle lookup now use direct Swift interfaces.
 
 ### Fixed
 
@@ -45,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clients do not need to import an implementation target.
 - Deprecated `HIDEvent.applePay` now fails predictably before HID event
   dispatch, rather than surfacing a transport-specific runtime error.
+- Fixed CoreSimulator pasteboard bridge ownership and foreground-app resolver
+  process cleanup.
 
 ## [0.14.0] - 2026-08-27
 

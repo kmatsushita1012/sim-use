@@ -30,6 +30,7 @@ struct PublicAPIVisibilityTests {
         requirePublicType(AppStateQuery.State.self)
         requirePublicType(AppStateResult.self)
         requirePublicType(TextRequest.self)
+        requirePublicType(PasteRequest.self)
         requirePublicType(TextRequestError.self)
         requirePublicType(ScreenshotRequest.self)
         requirePublicType(ScreenshotResult.self)
@@ -80,6 +81,19 @@ struct PublicAPIVisibilityTests {
         requiresRequest(TouchSequenceRequest(events: [.tap(x: 1, y: 1)]))
         requiresRequest(LongPressRequest(target: TapRequest(x: 1, y: 1)))
         requiresRequest(AppStateRequest())
+    }
+
+    @Test("PasteRequest is importable from SimUseKit alone")
+    func pasteRequestIsPublic() {
+        let request = PasteRequest("hello", replace: true)
+        #expect(request.text == "hello")
+        #expect(request.replace)
+    }
+
+    @Test("HIDEvent exposes native shake")
+    func hidEventShakeIsPublic() {
+        let event: HIDEvent = .shake
+        _ = event
     }
 
     @Test("public validation paths work without a simulator")

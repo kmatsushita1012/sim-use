@@ -100,8 +100,8 @@ public struct IOSSimDescribeUICommand: SimUseExecutableCommand {
         public let screen: Outline.Frame?
         public let appLabel: String
         /// CFBundleIdentifier of the foreground app. iOS V1 leaves this
-        /// empty when the AX tree doesn't expose it; resolution via
-        /// simctl is a separate follow-up.
+        /// empty when the AX tree doesn't expose it; resolution through the
+        /// internal CoreSimulator bridge is a separate best-effort follow-up.
         public let appPackage: String
         /// Android-only crash-dialog signal carried through the top-level
         /// `describe-ui` envelope (which shares this iOS-shaped struct).
@@ -280,13 +280,13 @@ public struct IOSSimDescribeUICommand: SimUseExecutableCommand {
             typedTree = []
         }
         // Foreground app's CFBundleIdentifier — best-effort. Empty
-        // string means resolution failed (no pid in tree, simctl
+        // string means resolution failed (no pid in tree, Simulator
         // unreachable, system root, etc.); consumers treat appPackage
         // as a hint. Resolved *before* rendering so the outline header
         // can be reconciled against the real foreground app rather than
         // the (possibly stale/empty) AX-root label (issue #81). Reuses
         // the daemon's just-taken liveness snapshot to avoid a second
-        // `launchctl` spawn when the root pid is already known.
+        // internal process inspection when the root pid is already known.
         let appPackage = BundleIdentifierResolver.resolve(
             udid: deviceID,
             rootElement: typedTree.first,

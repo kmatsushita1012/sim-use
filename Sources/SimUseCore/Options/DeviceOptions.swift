@@ -32,7 +32,7 @@ public struct DeviceOptions: ParsableArguments {
         name: .customLong("device"),
         help: "Target device — iOS Simulator UDID or Android adb serial. Auto-detected by string shape. Optional — defaults to the only booted iOS simulator on the host (or to the SIM_USE_DEVICE / SIM_USE_UDID env var when set)."
     )
-    public var device: String?
+    public var device: String? = nil
 
     @Option(
         name: .customLong("udid"),
@@ -41,7 +41,7 @@ public struct DeviceOptions: ParsableArguments {
             visibility: .default
         )
     )
-    public var udid: String?
+    public var udid: String? = nil
 
     /// Resolved device identifier. Populated by `resolve()`; the empty
     /// string until then. Reading this before resolution is a

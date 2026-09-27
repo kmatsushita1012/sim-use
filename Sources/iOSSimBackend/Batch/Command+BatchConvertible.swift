@@ -316,14 +316,13 @@ extension IOSSimPasteCommand: BatchConvertible {
             throw ValidationError("`paste` step text is empty; nothing to paste.")
         }
 
-        let udid = context.simulatorUDID
         let shouldReplace = replace
 
-        let pbcopyAction = BatchHostAction(label: "simctl pbcopy (\(inputText.utf8.count) bytes)") { _, _ in
-            try IOSSimPasteCommand.writeSimulatorPasteboard(text: inputText, udid: udid)
+        let pasteboardAction = BatchHostAction(label: "Simulator pasteboard (\(inputText.utf8.count) bytes)") { session, _ in
+            try IOSSimulatorPasteboard.write(text: inputText, to: session.simulator)
         }
 
-        var primitives: [BatchPrimitive] = [.hostAction(pbcopyAction)]
+        var primitives: [BatchPrimitive] = [.hostAction(pasteboardAction)]
 
         if shouldReplace {
             primitives.append(.hidBarrier(modifierCombo(
