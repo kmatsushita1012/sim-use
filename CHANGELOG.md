@@ -27,10 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The HID send deadline now executes its operation on `MainActor`, preserving
   the execution context required by the simulator's private HID framework
-  calls when Device Hub routes input through `dtuhidd`. `SimUseKit` taps now
-  send an explicit down/up lifecycle through the cached HID session rather
-  than relying on a single `tapAt` event that Device Hub can drop before
-  UIKit receives it.
+  calls when Device Hub routes input through `dtuhidd`. Zero-duration taps
+  now send an explicit down/up lifecycle as one composite HID event rather
+  than relying on a single `tapAt` event or independently drained primitives
+  that Device Hub can drop before UIKit receives them.
 - `SimUseKit` now keeps in-process HID events on the simulator runtime's
   `MainActor` and preserves their session, so pointer input reaches the
   application reliably. Zero-duration taps now send an explicit press/release

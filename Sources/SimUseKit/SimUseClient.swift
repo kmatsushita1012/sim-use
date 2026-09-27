@@ -240,15 +240,13 @@ private final class SimulatorWorker {
                 } else if case let .tap(x, y) = event {
                     // `tapAt` is accepted by the Device Hub transport but
                     // can be dropped before UIKit observes it. Mirror the
-                    // CLI path and send the complete press lifecycle through
-                    // this one cached session instead.
+                    // CLI path and send the complete press lifecycle as one
+                    // composite event; DTUHID drains at the gesture boundary.
                     try await HIDInteractor.performHIDEvent(
-                        .touch(direction: .down, x: x, y: y),
-                        in: session,
-                        logger: logger
-                    )
-                    try await HIDInteractor.performHIDEvent(
-                        .touch(direction: .up, x: x, y: y),
+                        FBSimulatorHIDEvent.composite([
+                            .touch(direction: .down, x: x, y: y),
+                            .touch(direction: .up, x: x, y: y),
+                        ]),
                         in: session,
                         logger: logger
                     )

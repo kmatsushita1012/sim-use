@@ -351,17 +351,15 @@ public struct IOSSimTapCommand: SimUseExecutableCommand {
         } else {
             // A single `tapAt` message is accepted by the transport but can
             // be dropped by the in-process simulator runtime before UIKit
-            // observes it. Send an explicit press lifecycle through one
-            // session so CLI, daemon, and SimUseKit clients all reach the
-            // same recognizers.
+            // observes it. DTUHID drains only after a complete composite
+            // gesture, so keep the press lifecycle in one event rather than
+            // sending its primitives independently.
             let session = try await HIDInteractor.makeSession(for: device.resolved, logger: logger)
             try await HIDInteractor.performHIDEvent(
-                FBSimulatorHIDEvent.touch(direction: .down, x: dispatchPoint.x, y: dispatchPoint.y),
-                in: session,
-                logger: logger
-            )
-            try await HIDInteractor.performHIDEvent(
-                FBSimulatorHIDEvent.touch(direction: .up, x: dispatchPoint.x, y: dispatchPoint.y),
+                FBSimulatorHIDEvent.composite([
+                    .touch(direction: .down, x: dispatchPoint.x, y: dispatchPoint.y),
+                    .touch(direction: .up, x: dispatchPoint.x, y: dispatchPoint.y),
+                ]),
                 in: session,
                 logger: logger
             )
