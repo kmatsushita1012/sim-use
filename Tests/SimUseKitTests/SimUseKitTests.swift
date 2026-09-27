@@ -23,6 +23,14 @@ struct SimUseKitTests {
         #expect(request.events.count == 3)
     }
 
+    @Test("continuous touch primitives retain their standalone delivery boundaries")
+    func continuousTouchPrimitivesRequireStandaloneFlush() {
+        #expect(HIDEvent.touchDown(x: 10, y: 20).requiresStandaloneFlush)
+        #expect(HIDEvent.touchMove(x: 15, y: 25).requiresStandaloneFlush)
+        #expect(HIDEvent.touchUp(x: 20, y: 30).requiresStandaloneFlush)
+        #expect(!HIDEvent.tap(x: 10, y: 20).requiresStandaloneFlush)
+    }
+
     @Test("request defaults do not depend on CLI parsing")
     func describeDefaults() {
         let request = DescribeUIRequest()

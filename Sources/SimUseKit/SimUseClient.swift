@@ -251,8 +251,16 @@ private final class SimulatorWorker {
                         logger: logger
                     )
                 } else if let backendEvent = event.makeBackendEvent() {
+                    // Device Hub's DTUHID transport only drains a digitizer
+                    // event at a composite boundary. Keep every public
+                    // `sendTimed` call discrete so clients can stream a real
+                    // down → move… → up sequence, while making each
+                    // individual touch event observable by the simulator.
+                    let transportEvent = event.requiresStandaloneFlush
+                        ? FBSimulatorHIDEvent.composite([backendEvent])
+                        : backendEvent
                     try await HIDInteractor.performHIDEvent(
-                        backendEvent,
+                        transportEvent,
                         in: session,
                         logger: logger
                     )
@@ -394,6 +402,19 @@ public enum HIDEvent: Sendable {
             return .button(direction: .up, button: FBSimulatorHIDButton(rawValue: Int32(button))!)
         case let .delay(seconds):
             return FBSimulatorHIDEvent.delay(seconds)
+        }
+    }
+
+    /// Continuous touch clients submit one primitive at a time. DTUHID needs
+    /// each primitive wrapped in a composite to flush it, but the wrapper
+    /// must not coalesce primitives or change their ordering.
+    var requiresStandaloneFlush: Bool {
+        switch self {
+        case .touchDown, .touchMove, .touchUp:
+            true
+        case .shake, .applePay, .sideButton, .siri, .tap, .swipe,
+             .keyDown, .keyUp, .buttonDown, .buttonUp, .delay:
+            false
         }
     }
 }

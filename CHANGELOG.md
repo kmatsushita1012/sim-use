@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `SimUseKit` now flushes each independently submitted touch-down, touch-move,
+  and touch-up event through Device Hub's DTUHID transport without coalescing
+  the application's continuous touch stream.
 - The HID send deadline now executes its operation on `MainActor`, preserving
   the execution context required by the simulator's private HID framework
   calls when Device Hub routes input through `dtuhidd`. Zero-duration taps
