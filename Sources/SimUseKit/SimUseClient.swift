@@ -321,7 +321,8 @@ private final class SimulatorWorker {
                 try await HIDInteractor.performHIDEvent(
                     transportEvent,
                     in: session,
-                    logger: logger
+                    logger: logger,
+                    stabilizationDelayMilliseconds: event.continuousTouchStabilizationDelayMilliseconds
                 )
             }
             let now = Date.timeIntervalSinceReferenceDate
@@ -470,6 +471,20 @@ public enum HIDEvent: Sendable {
         case .shake, .applePay, .sideButton, .siri, .tap, .swipe,
              .keyDown, .keyUp, .buttonDown, .buttonUp, .delay:
             false
+        }
+    }
+
+    /// Continuous preview input must keep up with pointer updates. Eight
+    /// milliseconds remains above the minimum interval required by the
+    /// underlying Indigo transport, while the final touch-up retains the
+    /// normal drain delay so it is not dropped when the stream goes idle.
+    var continuousTouchStabilizationDelayMilliseconds: UInt64? {
+        switch self {
+        case .touchDown, .touchMove:
+            8
+        case .shake, .applePay, .sideButton, .siri, .touchUp, .tap, .swipe,
+             .keyDown, .keyUp, .buttonDown, .buttonUp, .delay:
+            nil
         }
     }
 }

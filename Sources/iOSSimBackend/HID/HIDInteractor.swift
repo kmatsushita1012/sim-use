@@ -112,9 +112,19 @@ public struct HIDInteractor {
         return Session(simulatorUDID: simulatorUDID, simulator: simulator, hid: hid)
     }
 
-    public static func performHIDEvent(_ event: FBSimulatorHIDEvent, in session: Session, logger: SimUseLogger) async throws {
+    public static func performHIDEvent(
+        _ event: FBSimulatorHIDEvent,
+        in session: Session,
+        logger: SimUseLogger,
+        stabilizationDelayMilliseconds: UInt64? = nil
+    ) async throws {
         do {
-            try await performHIDEventOnce(event, in: session, logger: logger)
+            try await performHIDEventOnce(
+                event,
+                in: session,
+                logger: logger,
+                stabilizationDelayMilliseconds: stabilizationDelayMilliseconds
+            )
         } catch {
             // Fail-invalidate + cautious retry-once: see HIDPerformRecovery
             // for the decision rules and why only dead-transport errors
@@ -126,7 +136,12 @@ public struct HIDInteractor {
                 logger.info().log("Dead HID transport for \(session.simulatorUDID); rebuilding session and retrying once...")
                 let freshSession = try await makeSession(for: session.simulatorUDID, logger: logger)
                 do {
-                    try await performHIDEventOnce(event, in: freshSession, logger: logger)
+                    try await performHIDEventOnce(
+                        event,
+                        in: freshSession,
+                        logger: logger,
+                        stabilizationDelayMilliseconds: stabilizationDelayMilliseconds
+                    )
                 } catch {
                     // Keep the "a failed perform never leaves its
                     // connection cached" invariant on the retry path too.
@@ -137,7 +152,12 @@ public struct HIDInteractor {
         }
     }
 
-    private static func performHIDEventOnce(_ event: FBSimulatorHIDEvent, in session: Session, logger: SimUseLogger) async throws {
+    private static func performHIDEventOnce(
+        _ event: FBSimulatorHIDEvent,
+        in session: Session,
+        logger: SimUseLogger,
+        stabilizationDelayMilliseconds: UInt64?
+    ) async throws {
         logger.info().log("Performing HID event...")
         let timeoutMs = sendTimeoutMs
         // Capture the hid handle, not the whole Session: FBSimulatorHID is
@@ -161,9 +181,10 @@ public struct HIDInteractor {
         }
         logger.info().log("HID event performed successfully.")
 
-        if stabilizationDelayMs > 0 {
-            logger.info().log("Applying stabilization delay of \(stabilizationDelayMs)ms...")
-            try await Task.sleep(nanoseconds: stabilizationDelayMs * 1_000_000)
+        let delayMilliseconds = stabilizationDelayMilliseconds ?? stabilizationDelayMs
+        if delayMilliseconds > 0 {
+            logger.info().log("Applying stabilization delay of \(delayMilliseconds)ms...")
+            try await Task.sleep(nanoseconds: delayMilliseconds * 1_000_000)
         }
     }
 

@@ -31,6 +31,13 @@ struct SimUseKitTests {
         #expect(!HIDEvent.tap(x: 10, y: 20).requiresStandaloneFlush)
     }
 
+    @Test("continuous touch updates use the low-latency stabilization delay")
+    func continuousTouchUpdatesUseLowLatencyStabilization() {
+        #expect(HIDEvent.touchDown(x: 10, y: 20).continuousTouchStabilizationDelayMilliseconds == 8)
+        #expect(HIDEvent.touchMove(x: 15, y: 25).continuousTouchStabilizationDelayMilliseconds == 8)
+        #expect(HIDEvent.touchUp(x: 20, y: 30).continuousTouchStabilizationDelayMilliseconds == nil)
+    }
+
     @Test("independently submitted HID batches do not overlap")
     func hidEventCoordinatorSerializesBatches() async {
         let coordinator = HIDEventSendCoordinator()
