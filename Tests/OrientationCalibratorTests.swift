@@ -7,10 +7,12 @@ import Testing
 // MARK: - Fixture helpers
 //
 // A mock "screen" is a list of labeled UI-space rects plus a ground-truth
-// orientation. The probe receives a framebuffer point (exactly what the
-// real AX hit-test consumes), maps it through the ground truth, and
-// returns the first fixture rect containing the mapped point — i.e. it
+// orientation. The probe receives a point on the hit-test's native-
+// portrait AXES; on this 1:1 fixture the UI and pixels/scale metrics
+// coincide, so mapping through the ground truth on the native canvas
 // behaves exactly like the device did during the issue #34 verification.
+// (Downscaled devices, where the metrics diverge, are pinned separately
+// below.)
 
 private let iPadNative = NativePortraitSize(width: 834, height: 1210)
 
@@ -279,5 +281,86 @@ struct OrientationCalibratorTests {
             orientation: .portrait, native: iPadNative, probesUsed: 1, advisory: nil
         )
         #expect(portrait.hidPoint(x: 770, y: 332) == (770, 332))
+    }
+}
+
+// MARK: - Display-downscaled devices
+//
+// The hit-test XPC shares HID's native-portrait AXES but NOT its metric:
+// it consumes points in the UI point METRIC. Verified live on iPhone 12
+// mini / iOS 26.4 (Settings.app): querying the un-scaled UI point returns
+// the element at that point, while the pixels/scale-shrunk point lands
+// ~4% off target. Only HID dispatch normalizes against pixels/scale.
+// These mocks therefore interpret the probe point on the UI-sized
+// portrait canvas (375x812 on the mini), never on 360x780.
+
+private let miniNative = NativePortraitSize(width: 360, height: 780)
+
+@MainActor
+private final class ProbeLog {
+    var points: [CGPoint] = []
+}
+
+private func frameDict(_ rect: CGRect) -> [String: Any] {
+    [
+        "role": "AXButton",
+        "frame": [
+            "x": rect.minX, "y": rect.minY,
+            "width": rect.width, "height": rect.height,
+        ] as [String: Any],
+    ]
+}
+
+@MainActor
+@Suite("OrientationCalibrator on display-downscaled devices")
+struct DownscaledCalibratorTests {
+    @Test("portrait confirms with un-scaled probe points")
+    func downscaledPortraitProbes() async {
+        // The Settings toolbar Dictate button (17x22) — small enough that
+        // a probe shrunk into the HID metric (~4% off) misses it.
+        let dictate = CGRect(x: 309, y: 749, width: 17, height: 22)
+        let row = CGRect(x: 16, y: 630, width: 343, height: 52)
+        let log = ProbeLog()
+        let result = await OrientationCalibrator.calibrate(
+            native: miniNative,
+            uiScreenSize: (375, 812),
+            discriminators: [dictate, row],
+            probe: { p in
+                log.points.append(p)
+                // Portrait truth: the UI-metric portrait-axis point IS
+                // the UI point.
+                return [dictate, row].first(where: { $0.contains(p) }).map(frameDict)
+            },
+            logger: quietLogger
+        )
+        #expect(result.orientation == .portrait)
+        #expect(result.advisory == nil)
+        #expect(!result.uiScale.isIdentity)
+        #expect(log.points.first == CGPoint(x: 317.5, y: 760))
+    }
+
+    @Test("landscape probes rotate on the UI-sized canvas")
+    func downscaledLandscapeProbes() async {
+        // A small element in landscape-right UI space (812x375). The
+        // hit-test's inverse mapping runs on the UI-sized canvas:
+        // ui = (p.y, 375 − p.x).
+        let smallLandscape = CGRect(x: 795, y: 40, width: 16, height: 22)
+        let log = ProbeLog()
+        let result = await OrientationCalibrator.calibrate(
+            native: miniNative,
+            uiScreenSize: (812, 375),
+            discriminators: [smallLandscape],
+            probe: { p in
+                log.points.append(p)
+                let ui = CGPoint(x: p.y, y: 375 - p.x)
+                return smallLandscape.contains(ui) ? frameDict(smallLandscape) : nil
+            },
+            logger: quietLogger
+        )
+        #expect(result.orientation == .landscapeRight)
+        #expect(result.advisory == nil)
+        // center (803, 51) → portrait axes on the 375x812 canvas:
+        // (375 − 51, 803) = (324, 803).
+        #expect(log.points.first == CGPoint(x: 324, y: 803))
     }
 }

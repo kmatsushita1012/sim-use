@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 import AndroidBackend
+@preconcurrency import FBControlCore
 import FBSimulatorControl
 import SimUseCore
+import SimUseVideo
 import iOSSimBackend
 
 public struct ScreenshotRequest: SimUseRequest {
@@ -11,11 +13,20 @@ public struct ScreenshotRequest: SimUseRequest {
     public init() {}
 
     public func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> ScreenshotResult {
-        if PlatformRouter.looksLikeAndroid(deviceID.rawValue) {
+        switch PlatformRouter.resolve(udid: deviceID.rawValue) {
+        case .android:
             return ScreenshotResult(data: try AndroidScreenshotCommand.performScreenshot(udid: deviceID.rawValue))
+        case .iOSDevice:
+            throw TargetCapabilityError.physicalIOS(
+                verb: "ScreenshotRequest",
+                reason: "this in-memory result API currently covers simulator and Android captures only.",
+                alternative: "Use the top-level `sim-use screenshot --device <physical-udid>` command for a physical iOS capture."
+            )
+        case .iOSSim, .none:
+            break
         }
 
-        let logger = SimUseLogger(silent: true)
+        let logger = SimUseLogger()
         try await performGlobalSetup(logger: logger)
         let simulatorSet = try await getSimulatorSet(
             deviceSetPath: nil,

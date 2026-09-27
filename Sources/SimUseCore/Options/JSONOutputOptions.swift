@@ -19,4 +19,10 @@ public struct JSONOutputOptions: ParsableArguments {
     public var enabled: Bool = false
 
     public init() {}
+
+    /// Value initializer for application code that executes a backend
+    /// command directly instead of letting ArgumentParser populate it.
+    public init(enabled: Bool) {
+        self.enabled = enabled
+    }
 }

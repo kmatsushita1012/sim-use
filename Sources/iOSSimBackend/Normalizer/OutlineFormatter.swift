@@ -28,8 +28,20 @@ public enum OutlineFormatter {
     ]
 
     /// Types whose non-empty `AXValue` surfaces as a `value="..."` tag.
+    ///
+    /// Vocabulary is empirical (probed via the playground's Value Roles
+    /// screen on the iOS 26.5 AX bridge) — the bridge speaks macOS-style
+    /// role names, not `XCUIElementType`: UITextView → `TextArea`,
+    /// UISearchBar → `TextField`, UIPageControl → `Slider`,
+    /// UIProgressView → `GenericElement`, UISwitch → `CheckBox`.
+    /// `TextArea` carries typed text (chat inputs were unreadable in
+    /// the outline without it), `Slider` the thumb position, and
+    /// `Button` covers compact date pickers / stepper halves whose
+    /// AXValue is the only readable state.
+    /// `GenericElement` stays out: it would drag every status-bar
+    /// item's value into the outline.
     private static let valueBearingTypes: Set<String> = [
-        "TextField", "SecureTextField", "Switch",
+        "TextField", "SecureTextField", "Switch", "TextArea", "Slider", "Button",
     ]
 
     /// Distance (in points) the top and bottom y-band fallbacks claim
@@ -355,7 +367,12 @@ public enum OutlineFormatter {
            let type = element.type,
            valueBearingTypes.contains(type),
            let value = element.normalizedValue,
-           !value.isEmpty
+           !value.isEmpty,
+           // A label-less element already surfaces its value in the
+           // label slot (`rawLabel` fallback); repeating it as a tag
+           // would double-print. Same guard as Android's
+           // `AndroidClassifier.effectiveValue` (text == label → nil).
+           value != rawLabel(for: element)
         {
             let rendered = escapeAndTruncate(value, maxGraphemes: 30)
             tags.append("value=\"\(rendered)\"")

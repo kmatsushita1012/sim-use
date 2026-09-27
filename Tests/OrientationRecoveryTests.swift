@@ -4,11 +4,13 @@ import Foundation
 import Testing
 
 // Regression for issue #34's quadtree symptom: on a rotated device the
-// recovery probes (framebuffer space) and the AX frames (UI space)
+// recovery probes (native-portrait axes) and the AX frames (UI space)
 // disagree, so entire off-center containers — the Settings sidebar in the
 // live reproduction — silently vanish from the outline. The fix routes
 // every probe through the orientation calibration exactly as
-// `AccessibilityFetcher.fetchAccessibilityInfo` composes it.
+// `AccessibilityFetcher.fetchAccessibilityInfo` composes it. (This 1:1
+// fixture's UI and pixels/scale metrics coincide; the downscaled metric
+// split is pinned in DownscaledCalibratorTests.)
 
 private let native = NativePortraitSize(width: 400, height: 800)
 private let sidebarFrame = CGRect(x: 10, y: 100, width: 150, height: 600)
@@ -46,10 +48,11 @@ private func fixtureTree() -> NSArray {
     return [app] as NSArray
 }
 
-/// The device: interprets probe input in framebuffer space, returns
-/// frames in UI space — ground truth is a 180°-rotated iPad-like screen.
-private func deviceProbe(_ framebufferPoint: CGPoint) -> [String: Any]? {
-    let ui = DisplayOrientation.portraitUpsideDown.framebufferToUI(framebufferPoint, native: native)
+/// The device: interprets probe input on native-portrait axes (this 1:1
+/// fixture's UI and pixels/scale metrics coincide), returns frames in UI
+/// space — ground truth is a 180°-rotated iPad-like screen.
+private func deviceProbe(_ probePoint: CGPoint) -> [String: Any]? {
+    let ui = DisplayOrientation.portraitUpsideDown.framebufferToUI(probePoint, native: native)
     guard let (index, hit) = sidebarItems.enumerated().first(where: { $0.element.contains(ui) })
     else { return nil }
     return [

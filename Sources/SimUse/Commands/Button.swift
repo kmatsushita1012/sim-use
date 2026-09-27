@@ -44,7 +44,7 @@ struct Button: SimUseExecutableCommand {
     var jsonOutput: Bool { json.enabled }
 
     mutating func resolveDeferredArguments() throws {
-        try device.resolve()
+        try device.resolve(allowPhysical: true)
     }
 
     var simulatorUDIDForDaemon: String? { device.resolved }
@@ -61,18 +61,33 @@ struct Button: SimUseExecutableCommand {
         switch PlatformRouter.resolve(udid: device.resolved) {
         case .android:
             return try executeAndroid()
+        case .iOSDevice:
+            throw TargetCapabilityError.physicalIOS(
+                verb: "button",
+                reason: "hardware-button events are injected through the simulator HID channel, which physical devices do not expose.",
+                alternative: "Press the button on the device itself, or drive on-screen UI with `sim-use ui` + `sim-use tap '#<id>' / --label`."
+            )
         case .iOSSim, .none:
             return try await executeIOSSim()
         }
     }
 
     private func executeIOSSim() async throws -> ExecutionResult {
+        let sub = makeIOSSubcommand()
+        return try await sub.execute()
+    }
+
+    /// Construct the backend command and copy every parsed flag across.
+    /// A missed field stays in ArgumentParser's wrapper-definition state
+    /// and traps on first read (#42) — pinned by
+    /// `ForwarderInitializationGuardTests`.
+    func makeIOSSubcommand() -> IOSSimButtonCommand {
         var sub = IOSSimButtonCommand()
         sub.buttonType = buttonType
         sub.duration = duration
         sub.device = device
         sub.json = json
-        return try await sub.execute()
+        return sub
     }
 
     private func executeAndroid() throws -> ExecutionResult {

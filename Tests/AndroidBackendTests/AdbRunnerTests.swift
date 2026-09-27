@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import XCTest
+import os
 @testable import AndroidBackend
 
 /// Integration-level tests for `Adb.run(args:)`. These spawn real
@@ -47,6 +48,52 @@ final class AdbRunnerTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 0)
     }
 
+    /// `waitForExit` must not finalize the consumer while a readability
+    /// callback has already taken bytes out of the pipe but not yet delivered
+    /// them. The blocked first callback reproduces the shutdown race that
+    /// previously lost the final H.264 chunk.
+    func testStreamingProcessDrainsInFlightStdoutBeforeReturning() throws {
+        let callbackStarted = DispatchSemaphore(value: 0)
+        let unblockFirstCallback = DispatchSemaphore(value: 0)
+        let waitReturned = DispatchSemaphore(value: 0)
+        let callbackCount = OSAllocatedUnfairLock(initialState: 0)
+        let received = OSAllocatedUnfairLock(initialState: Data())
+
+        let process = AdbStreamingProcess(
+            adbPath: "/bin/sh",
+            arguments: ["-c", "printf first; sleep 0.1; printf second"],
+            onStdout: { chunk in
+                let count = callbackCount.withLock { count in
+                    count += 1
+                    return count
+                }
+                if count == 1 {
+                    callbackStarted.signal()
+                    unblockFirstCallback.wait()
+                }
+                received.withLock { $0.append(chunk) }
+            }
+        )
+        try process.start()
+        XCTAssertEqual(callbackStarted.wait(timeout: .now() + 2), .success)
+
+        DispatchQueue.global().async {
+            _ = process.waitForExit(timeout: 2)
+            waitReturned.signal()
+        }
+
+        let returnedBeforeRelease = waitReturned.wait(timeout: .now() + 0.5) == .success
+        XCTAssertFalse(returnedBeforeRelease, "waitForExit must wait for the callback that already consumed stdout")
+        if returnedBeforeRelease {
+            unblockFirstCallback.signal()
+            return
+        }
+
+        unblockFirstCallback.signal()
+        XCTAssertEqual(waitReturned.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(String(data: received.withLock { $0 }, encoding: .utf8), "firstsecond")
+    }
+
     /// Sanity check that a process exceeding the timeout still
     /// surfaces a timeout error (not a deadlock, not a 0-exit
     /// success). The post-terminate wait gives the child a chance
@@ -68,27 +115,55 @@ final class AdbRunnerTests: XCTestCase {
     /// every invocation took ≥ 20 ms even when the child exited in
     /// microseconds. The terminationHandler + semaphore replacement
     /// is woken by the kernel, so an unloaded call completes in a
-    /// few ms. Assert on the fastest of 20 calls: scheduler noise
-    /// under parallel-suite load inflates individual calls and any
-    /// summed budget (observed 0.42–0.53 s for 20 calls on loaded
-    /// CI/dev machines — the same order as the floor), but only a
-    /// real per-call floor lifts the minimum of 20 samples above
-    /// 20 ms.
+    /// few ms.
+    ///
+    /// Third design iteration. Absolute thresholds cannot separate
+    /// the floor from machine load: min-of-20 against a flat 20 ms
+    /// bound was observed at 21.5 ms on a busy machine — inside the
+    /// ~22–23 ms a real floor would produce, so relaxing the bound
+    /// would also pass the regression it guards against. Instead,
+    /// pair each runner call with a floorless direct `Process` spawn
+    /// of the same child and compare the two minima: load inflates
+    /// both sides together, while a per-call sleep floor shows up as
+    /// a stable one-sided offset of the full floor (20 ms), far above
+    /// the 15 ms margin.
     func testRunFastChildHasLowLatency() throws {
         let adb = Adb(binaryPath: "/bin/sh", defaultTimeout: 5)
-        // Warm up the dyld / fork+exec path so the timed loop below
-        // measures steady-state cost rather than first-spawn outliers.
+
+        func directSpawn() throws -> TimeInterval {
+            let start = Date()
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", ":"]
+            try process.run()
+            process.waitUntilExit()
+            return Date().timeIntervalSince(start)
+        }
+
+        // Warm up the dyld / fork+exec path on both sides so the timed
+        // loop measures steady-state cost rather than first-spawn
+        // outliers.
         _ = try adb.run(args: ["-c", ":"])
-        var fastest = TimeInterval.infinity
+        _ = try directSpawn()
+
+        var fastestAdb = TimeInterval.infinity
+        var fastestDirect = TimeInterval.infinity
+        // Interleave the two so both sample the same load conditions.
         for _ in 0..<20 {
+            fastestDirect = min(fastestDirect, try directSpawn())
             let start = Date()
             _ = try adb.run(args: ["-c", ":"])
-            fastest = min(fastest, Date().timeIntervalSince(start))
+            fastestAdb = min(fastestAdb, Date().timeIntervalSince(start))
         }
+
         XCTAssertLessThan(
-            fastest,
-            0.02,
-            "the fastest of 20 adb invocations should undercut the 20 ms polling floor; got \(fastest)s"
+            fastestAdb,
+            fastestDirect + 0.015,
+            """
+            the fastest of 20 runner invocations should track the fastest \
+            direct spawn (a per-call polling floor adds a stable ~20 ms); \
+            got runner \(fastestAdb)s vs direct \(fastestDirect)s
+            """
         )
     }
 

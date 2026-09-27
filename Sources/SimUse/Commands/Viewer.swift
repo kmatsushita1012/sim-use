@@ -21,7 +21,7 @@ struct Viewer: AsyncParsableCommand {
         agent scripts or chasing missing labels. It hosts:
 
           /                — the React SPA (built into this binary)
-          /api/devices     — currently usable simulators (mirrors `sim-use devices --json`)
+          /api/devices     — usable iOS Simulators and Android devices
           /api/snapshot    — one UI snapshot (mirrors `sim-use describe-ui --json`)
           /api/tap         — replay a tap by @N alias (mirrors `sim-use tap`)
 

@@ -34,6 +34,25 @@ public struct SwipeCoordinateOptions: ParsableArguments {
 
     public init() {}
 
+    /// Value initializer for direct backend use outside ArgumentParser.
+    public init(
+        coordinatePairs: [CoordinatePair] = [],
+        from: CoordinatePair? = nil,
+        to: CoordinatePair? = nil,
+        startX: Double? = nil,
+        startY: Double? = nil,
+        endX: Double? = nil,
+        endY: Double? = nil
+    ) {
+        self.coordinatePairs = coordinatePairs
+        self.from = from
+        self.to = to
+        self.startX = startX
+        self.startY = startY
+        self.endX = endX
+        self.endY = endY
+    }
+
     /// Resolve whichever complete form was supplied into concrete
     /// coordinates. Throws `ValidationError` for missing/partial/mixed
     /// forms and for out-of-range values (negative, non-finite, or

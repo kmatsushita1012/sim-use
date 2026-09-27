@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 import Testing
-@testable import iOSSimBackend
+@testable import SimUseCore
 
 /// Pins the semantics `streamBGRA` relies on: the box is empty until an
 /// error is set, the first error wins (later sets are no-ops), and

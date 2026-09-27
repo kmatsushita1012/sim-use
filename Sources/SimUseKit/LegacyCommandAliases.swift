@@ -5,11 +5,11 @@ import iOSSimBackend
 /// Typed compatibility aliases for commands that do not yet have a
 /// dedicated application-facing request. They are intentionally aliases,
 /// not new CLI wrappers: `SimUseClient.execute(_:on:)` invokes their existing
-/// `execute()` implementation directly and never reparses arguments.
-/// Configure the command's public properties (including `device.device`)
-/// before passing it to the client. Prefer a dedicated `SimUseRequest` when
-/// one exists; the aliases cover the complete current command surface and
-/// future commands that conform to `SimUseExecutableCommand`.
+/// `execute()` implementation directly and never invokes ArgumentParser.
+/// Construct an alias with `parse`, including its `--device` argument, before
+/// passing it to the client. Prefer a dedicated `SimUseRequest` when one
+/// exists; the aliases cover the complete current command surface and future
+/// commands that conform to `SimUseExecutableCommand`.
 public typealias IOSDescribeUICommand = IOSSimDescribeUICommand
 public typealias IOSTapCommand = IOSSimTapCommand
 public typealias IOSSwipeCommand = IOSSimSwipeCommand

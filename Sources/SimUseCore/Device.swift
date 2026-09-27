@@ -2,13 +2,18 @@
 import Foundation
 
 /// Cross-platform identifier for one connected device sim-use can target —
-/// an iOS Simulator runtime from `simctl list devices`, or an Android
-/// device / emulator from `adb devices`. The two platforms originally
-/// shipped with separate listing commands (`list-simulators`,
-/// `android devices`) and ad-hoc output shapes; `Device` is the unified
-/// row that the top-level `sim-use devices` verb emits so external
-/// tooling (the Viewer, future IDE integrations, agents) only needs one
-/// schema.
+/// an iOS Simulator runtime from `simctl list devices`, an Android
+/// device / emulator from `adb devices`, or a physical iPhone / iPad from
+/// `FBDeviceControl` discovery. The platforms originally shipped with
+/// separate listing commands (`list-simulators`, `android devices`) and
+/// ad-hoc output shapes; `Device` is the unified row that the top-level
+/// `sim-use devices` verb emits so external tooling (the Viewer, future
+/// IDE integrations, agents) only needs one schema.
+///
+/// `platform` answers "which OS", `kind` answers "which carrier" —
+/// deliberately orthogonal axes, because capabilities follow the kind
+/// (an iOS *simulator* takes coordinate HID; an iOS *physical* device
+/// does not) while the verb vocabulary follows the platform.
 ///
 /// `state` is intentionally a free-form string: iOS reports
 /// `Booted` / `Shutdown` / `Shutting Down` / `Booting` / `Creating`, and
@@ -25,6 +30,7 @@ public struct Device: Codable, Equatable, Hashable, Sendable {
         case deviceId
         case name
         case platform
+        case kind
         case state
         case runtime
     }
@@ -32,6 +38,14 @@ public struct Device: Codable, Equatable, Hashable, Sendable {
     public enum Platform: String, Codable, Sendable, CaseIterable {
         case ios
         case android
+    }
+
+    /// What carries the OS: a Simulator runtime, an Android emulator, or
+    /// real hardware. Orthogonal to `platform`.
+    public enum Kind: String, Codable, Sendable, CaseIterable {
+        case simulator
+        case emulator
+        case physical
     }
 
     /// Platform-state strings as the underlying tools emit them.
@@ -51,23 +65,27 @@ public struct Device: Codable, Equatable, Hashable, Sendable {
     public let udid: String
     public let name: String
     public let platform: Platform
+    public let kind: Kind
     public let state: String
     /// Human-readable runtime label. iOS: the simctl runtime
-    /// (`iOS 18.6`, `watchOS 26.1`); Android: `Android` (we don't fetch
-    /// the OS version via adb to keep `devices` cheap). Nil when the
-    /// platform genuinely has none to report.
+    /// (`iOS 18.6`, `watchOS 26.1`) or the physical device's OS
+    /// (`iOS 26.6`); Android: `Android` (we don't fetch the OS version
+    /// via adb to keep `devices` cheap). Nil when the platform genuinely
+    /// has none to report.
     public let runtime: String?
 
     public init(
         udid: String,
         name: String,
         platform: Platform,
+        kind: Kind,
         state: String,
         runtime: String?
     ) {
         self.udid = udid
         self.name = name
         self.platform = platform
+        self.kind = kind
         self.state = state
         self.runtime = runtime
     }
@@ -87,6 +105,18 @@ public struct Device: Codable, Equatable, Hashable, Sendable {
         self.platform = try c.decode(Platform.self, forKey: .platform)
         self.state = try c.decode(String.self, forKey: .state)
         self.runtime = try c.decodeIfPresent(String.self, forKey: .runtime)
+        // Payloads from before the `kind` field (older daemons, cached
+        // JSON) carry enough to infer it: pre-kind iOS listings only ever
+        // contained simulators, and the Android emulator serial prefix is
+        // the same signal `adb` consumers have always used.
+        if let kind = try c.decodeIfPresent(Kind.self, forKey: .kind) {
+            self.kind = kind
+        } else {
+            switch platform {
+            case .ios:     kind = .simulator
+            case .android: kind = resolved.hasPrefix("emulator-") ? .emulator : .physical
+            }
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -94,6 +124,7 @@ public struct Device: Codable, Equatable, Hashable, Sendable {
         try c.encode(udid, forKey: .deviceId)
         try c.encode(name, forKey: .name)
         try c.encode(platform, forKey: .platform)
+        try c.encode(kind, forKey: .kind)
         try c.encode(state, forKey: .state)
         try c.encodeIfPresent(runtime, forKey: .runtime)
     }

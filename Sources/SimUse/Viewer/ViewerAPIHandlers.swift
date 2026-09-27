@@ -2,44 +2,80 @@
 import Foundation
 import SimUseKit
 
-// HTTP handlers that mirror the Viewer SPA API. All iOS operations call the
-// in-process Swift interface directly; the Viewer never starts `sim-use`,
+// HTTP handlers that mirror the Viewer SPA API. Device operations call the
+// in-process platform interfaces directly; the Viewer never starts `sim-use`,
 // reparses ArgumentParser input, or decodes a CLI JSON envelope.
 struct ViewerAPIHandlers {
-    private let listSimulators: @Sendable () async throws -> [Device]
+    private let listDevices: @Sendable () async throws -> [Device]
     private let describeUI: @Sendable (SimulatorID) async throws -> UIResult
     private let tap: @Sendable (SimulatorID, Int) async throws -> TapResult
 
     init(client: SimUseClient = SimUseClient()) {
-        self.listSimulators = { try await client.listSimulators() }
+        self.listDevices = {
+            let simulators = try await client.listSimulators()
+            let android = (try? AndroidDeviceController().listUnifiedDevices(onlineOnly: true)) ?? []
+            return simulators + android
+        }
         self.describeUI = { deviceID in
-            try await client.execute(DescribeUIRequest(), on: deviceID)
+            if PlatformRouter.looksLikeAndroid(deviceID.rawValue) {
+                let result = try AndroidDescribeUICommand.performDescribeUI(
+                    udid: deviceID.rawValue,
+                    includeOffscreen: false,
+                    includeRaw: false
+                )
+                return UIResult(
+                    platform: result.platform.rawValue,
+                    raw: nil,
+                    outline: result.outline,
+                    entries: result.entries,
+                    lists: result.lists,
+                    screen: result.screen,
+                    appLabel: result.appLabel,
+                    appPackage: result.appPackage,
+                    crashDialog: result.crashDialog
+                )
+            }
+            return try await client.execute(DescribeUIRequest(), on: deviceID)
         }
         self.tap = { deviceID, at in
-            try await client.execute(TapRequest(alias: "@\(at)"), on: deviceID)
+            if PlatformRouter.looksLikeAndroid(deviceID.rawValue) {
+                let result = try AndroidTapCommand.performTap(
+                    udid: deviceID.rawValue,
+                    alias: "@\(at)",
+                    x: nil,
+                    y: nil,
+                    selector: AndroidSelector()
+                )
+                return TapResult(x: Double(result.x), y: Double(result.y))
+            }
+            return try await client.execute(TapRequest(alias: "@\(at)"), on: deviceID)
         }
     }
 
     init(
-        listSimulators: @escaping @Sendable () async throws -> [Device],
+        listDevices: @escaping @Sendable () async throws -> [Device],
         describeUI: @escaping @Sendable (SimulatorID) async throws -> UIResult,
         tap: @escaping @Sendable (SimulatorID, Int) async throws -> TapResult
     ) {
-        self.listSimulators = listSimulators
+        self.listDevices = listDevices
         self.describeUI = describeUI
         self.tap = tap
     }
 
     func devices(_ request: HTTPRequest) async -> HTTPResponse {
         do {
-            let devices = (try await listSimulators()).map { device in
-                [
-                    "deviceId": device.udid,
-                    "name": device.name,
-                    "platform": device.platform.rawValue,
-                    "runtime": device.runtime ?? "",
-                ] as [String: Any]
-            }
+            // Physical iOS cannot provide the coordinate UI needed by the Viewer.
+            let devices = (try await listDevices())
+                .filter { $0.platform != .ios || $0.kind == .simulator }
+                .map { device in
+                    [
+                        "deviceId": device.udid,
+                        "name": device.name,
+                        "platform": device.platform.rawValue,
+                        "kind": device.kind.rawValue,
+                        "runtime": device.runtime ?? "",
+                    ] as [String: Any]
+                }
             return .json(200, ["ok": true, "devices": devices])
         } catch {
             return failure(error)
@@ -56,6 +92,14 @@ struct ViewerAPIHandlers {
 
         do {
             let result = try await describeUI(SimulatorID(deviceId))
+            var screen: [String: Any] = [
+                "appLabel": result.appLabel,
+                "width": result.screen.width,
+                "height": result.screen.height,
+            ]
+            if let orientation = result.orientation {
+                screen["orientation"] = orientation
+            }
             return .json(200, [
                 "ok": true,
                 "capturedAt": iso8601Now(),
@@ -64,11 +108,7 @@ struct ViewerAPIHandlers {
                 "outline": result.outline,
                 "entries": encodableObject(result.entries),
                 "lists": encodableObject(result.lists),
-                "screen": [
-                    "appLabel": result.appLabel,
-                    "width": result.screen.width,
-                    "height": result.screen.height,
-                ],
+                "screen": screen,
             ])
         } catch {
             return failure(error)

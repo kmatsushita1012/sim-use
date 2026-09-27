@@ -45,7 +45,7 @@ struct AppState: SimUseExecutableCommand {
     var managesLivenessState: Bool { true }
 
     mutating func resolveDeferredArguments() throws {
-        try device.resolve()
+        try device.resolve(allowPhysical: true)
     }
 
     // MARK: - Result
@@ -72,7 +72,19 @@ struct AppState: SimUseExecutableCommand {
 
     func execute() async throws -> ExecutionResult {
         let udid = device.resolved
-        let isAndroid = PlatformRouter.looksLikeAndroid(udid)
+        let isAndroid: Bool
+        switch PlatformRouter.resolve(udid: udid) {
+        case .android:
+            isAndroid = true
+        case .iOSDevice:
+            throw TargetCapabilityError.physicalIOS(
+                verb: "app-state",
+                reason: "there is no process-list channel for physical devices — the accessibility audit channel reads UI trees only, and crash detection is daemon state physical targets don't participate in yet.",
+                alternative: "Read the foreground app with `sim-use ui` instead; its outline header and content reflect what is currently on screen."
+            )
+        case .iOSSim, .none:
+            isAndroid = false
+        }
         let probed = isAndroid
             ? AndroidProcessLister.appSnapshot(serial: udid)
             : BundleIdentifierResolver.appSnapshot(udid: udid)

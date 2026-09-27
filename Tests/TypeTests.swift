@@ -228,4 +228,29 @@ struct TypeTests {
         }
         #expect(textFieldElement?.value == textToType, "Text from file should be typed correctly")
     }
+
+    @Test("Typed text surfaces in the text outline for a labeled TextArea")
+    func textAreaOutlineValue() async throws {
+        // Arrange — the text-area screen hosts a TextEditor with an
+        // accessibility label, mirroring real-world chat inputs: the label
+        // owns the outline's label slot, so the typed text is observable
+        // only through the value= tag.
+        try await TestHelpers.launchPlaygroundApp(to: "text-area")
+        let textToType = "hello textarea"
+
+        // Act
+        try await TestHelpers.runSimUseCommand("type \"\(textToType)\"", simulatorUDID: defaultSimulatorUDID)
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+
+        // Assert — on the human-readable outline, not the JSON envelope.
+        let outline = try await TestHelpers.runSimUseCommand("describe-ui", simulatorUDID: defaultSimulatorUDID)
+        let fieldLine = outline.output
+            .split(separator: "\n")
+            .first { $0.contains("#text-area-field") }
+        #expect(fieldLine != nil, "Outline should contain the text-area field")
+        #expect(
+            fieldLine?.contains(#"value="\#(textToType)""#) == true,
+            "Outline should surface the typed text, got: \(fieldLine.map(String.init) ?? "<missing>")"
+        )
+    }
 }

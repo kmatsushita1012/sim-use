@@ -114,6 +114,7 @@ final class AndroidJSONEnvelopeTests: XCTestCase {
                 udid: "emulator-5554",
                 name: "Pixel_7_API_35",
                 platform: .android,
+                kind: .emulator,
                 state: Device.State.androidOnline,
                 runtime: nil
             )
@@ -128,5 +129,6 @@ final class AndroidJSONEnvelopeTests: XCTestCase {
         XCTAssertTrue(json.contains(#""deviceId":"emulator-5554""#), json)
         XCTAssertFalse(json.contains(#""udid""#), "legacy `udid` key must not be emitted: \(json)")
         XCTAssertTrue(json.contains(#""platform":"android""#), json)
+        XCTAssertTrue(json.contains(#""kind":"emulator""#), json)
     }
 }

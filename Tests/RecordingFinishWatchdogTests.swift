@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-@testable import iOSSimBackend
+@testable import SimUseVideo
 import Foundation
 import Testing
 

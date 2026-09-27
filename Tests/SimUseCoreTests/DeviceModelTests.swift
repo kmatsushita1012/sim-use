@@ -10,31 +10,31 @@ final class DeviceModelTests: XCTestCase {
     // MARK: - isUsable
 
     func testIOSBootedIsUsable() {
-        let d = Device(udid: "X", name: "iPhone", platform: .ios, state: "Booted", runtime: "iOS 18.6")
+        let d = Device(udid: "X", name: "iPhone", platform: .ios, kind: .simulator, state: "Booted", runtime: "iOS 18.6")
         XCTAssertTrue(d.isUsable)
     }
 
     func testIOSShutdownIsNotUsable() {
-        let d = Device(udid: "X", name: "iPhone", platform: .ios, state: "Shutdown", runtime: "iOS 18.6")
+        let d = Device(udid: "X", name: "iPhone", platform: .ios, kind: .simulator, state: "Shutdown", runtime: "iOS 18.6")
         XCTAssertFalse(d.isUsable)
     }
 
     func testIOSTransitionalStatesAreNotUsable() {
         // sim-use can't drive HID against a half-booted sim, so be strict.
         for state in ["Booting", "Shutting Down", "Creating"] {
-            let d = Device(udid: "X", name: "iPhone", platform: .ios, state: state, runtime: "iOS 18.6")
+            let d = Device(udid: "X", name: "iPhone", platform: .ios, kind: .simulator, state: state, runtime: "iOS 18.6")
             XCTAssertFalse(d.isUsable, "iOS state \(state) should not be usable")
         }
     }
 
     func testAndroidDeviceStateIsUsable() {
-        let d = Device(udid: "emulator-5554", name: "Pixel", platform: .android, state: "device", runtime: "Android")
+        let d = Device(udid: "emulator-5554", name: "Pixel", platform: .android, kind: .emulator, state: "device", runtime: "Android")
         XCTAssertTrue(d.isUsable)
     }
 
     func testAndroidOfflineAndUnauthorisedAreNotUsable() {
         for state in ["offline", "unauthorized", "no device"] {
-            let d = Device(udid: "emulator-5554", name: "Pixel", platform: .android, state: state, runtime: "Android")
+            let d = Device(udid: "emulator-5554", name: "Pixel", platform: .android, kind: .emulator, state: state, runtime: "Android")
             XCTAssertFalse(d.isUsable, "Android state '\(state)' should not be usable")
         }
     }
@@ -42,7 +42,7 @@ final class DeviceModelTests: XCTestCase {
     // MARK: - JSON encoding (wire format)
 
     func testJSONShapeMatchesWireExpectation() throws {
-        let d = Device(udid: "u", name: "n", platform: .ios, state: "Booted", runtime: "iOS 18.6")
+        let d = Device(udid: "u", name: "n", platform: .ios, kind: .simulator, state: "Booted", runtime: "iOS 18.6")
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let json = String(data: try encoder.encode(d), encoding: .utf8)
@@ -51,7 +51,7 @@ final class DeviceModelTests: XCTestCase {
         // the legacy `udid` key was dual-emitted during the deprecation
         // window and is no longer written as of Phase 2. Decoding still
         // accepts `udid`-only payloads (see testJSONAcceptsUDIDOnly).
-        XCTAssertEqual(json, #"{"deviceId":"u","name":"n","platform":"ios","runtime":"iOS 18.6","state":"Booted"}"#)
+        XCTAssertEqual(json, #"{"deviceId":"u","kind":"simulator","name":"n","platform":"ios","runtime":"iOS 18.6","state":"Booted"}"#)
         XCTAssertFalse(json?.contains(#""udid""#) ?? true,
                        "legacy `udid` key must not be emitted, got: \(json ?? "nil")")
     }
@@ -78,8 +78,36 @@ final class DeviceModelTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(Device.self, from: Data(payload.utf8)))
     }
 
+    // MARK: - kind inference for pre-kind payloads
+
+    func testMissingKindInfersSimulatorForIOS() throws {
+        // Pre-kind iOS listings only ever contained simulators.
+        let payload = #"{"deviceId":"abc","name":"x","platform":"ios","state":"Booted"}"#
+        let d = try JSONDecoder().decode(Device.self, from: Data(payload.utf8))
+        XCTAssertEqual(d.kind, .simulator)
+    }
+
+    func testMissingKindInfersEmulatorFromAndroidSerialPrefix() throws {
+        let payload = #"{"deviceId":"emulator-5554","name":"x","platform":"android","state":"device"}"#
+        let d = try JSONDecoder().decode(Device.self, from: Data(payload.utf8))
+        XCTAssertEqual(d.kind, .emulator)
+    }
+
+    func testMissingKindInfersPhysicalForNonEmulatorAndroidSerial() throws {
+        let payload = #"{"deviceId":"R5CT1ABCD12","name":"x","platform":"android","state":"device"}"#
+        let d = try JSONDecoder().decode(Device.self, from: Data(payload.utf8))
+        XCTAssertEqual(d.kind, .physical)
+    }
+
+    func testExplicitKindWinsOverInference() throws {
+        // A physical iPhone row must not be re-inferred as a simulator.
+        let payload = #"{"deviceId":"00008130-00066D2A10EB8D3A","name":"iPhone One","platform":"ios","kind":"physical","state":"Booted"}"#
+        let d = try JSONDecoder().decode(Device.self, from: Data(payload.utf8))
+        XCTAssertEqual(d.kind, .physical)
+    }
+
     func testJSONRoundTrip() throws {
-        let original = Device(udid: "emulator-5554", name: "Pixel", platform: .android, state: "device", runtime: "Android")
+        let original = Device(udid: "emulator-5554", name: "Pixel", platform: .android, kind: .emulator, state: "device", runtime: "Android")
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(Device.self, from: data)
         XCTAssertEqual(original, decoded)
@@ -91,7 +119,7 @@ final class DeviceModelTests: XCTestCase {
         // (the Viewer server, jq scripts) must treat a missing `runtime`
         // and an explicit null identically — both mean "platform has no
         // runtime to report".
-        let d = Device(udid: "u", name: "n", platform: .android, state: "device", runtime: nil)
+        let d = Device(udid: "u", name: "n", platform: .android, kind: .emulator, state: "device", runtime: nil)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let json = String(data: try encoder.encode(d), encoding: .utf8) ?? ""

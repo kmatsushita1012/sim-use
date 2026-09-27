@@ -7,7 +7,7 @@ import SimUseCore
 /// Conformance attached to the iOS-side verb command structs so the
 /// `batch` step parser can lift a parsed step into a sequence of
 /// `BatchPrimitive`s. iOS-only HID verbs (`key`, `key-combo`,
-/// `key-sequence`, `stream-video`, `batch`) have no top-level
+/// `key-sequence`, `batch`) have no top-level
 /// cross-platform wrapper, and the cross-platform verbs (Tap / Type /
 /// Paste / Button / Swipe / Touch / Gesture) keep all their
 /// batch-relevant state on their `IOSSim<Verb>Command` sub-struct —
@@ -30,7 +30,7 @@ private func buildDelayedEvent(
     if let postDelay, postDelay > 0 {
         events.append(.delay(postDelay))
     }
-    return events.count == 1 ? events[0] : FBSimulatorHIDEvent(events: events)
+    return events.count == 1 ? events[0] : FBSimulatorHIDEvent.composite(events)
 }
 
 extension IOSSimTapCommand: BatchConvertible {
@@ -39,19 +39,19 @@ extension IOSSimTapCommand: BatchConvertible {
         // selectors (issue #34), raw for explicit --point/-x/-y.
         let resolvedPoint: (x: Double, y: Double)
 
-        if let explicit = try TapCoordinateResolver.resolve(x: pointX, y: pointY, point: point) {
+        if let explicit = try TapCoordinateResolver.resolve(x: targeting.pointX, y: targeting.pointY, point: targeting.point) {
             resolvedPoint = (explicit.x, explicit.y)
         } else {
             let query: AccessibilityQuery
-            if let elementID {
+            if let elementID = targeting.elementID {
                 query = .id(elementID)
-            } else if let elementLabel {
+            } else if let elementLabel = targeting.elementLabel {
                 query = .label(elementLabel)
-            } else if let elementValue {
+            } else if let elementValue = targeting.elementValue {
                 query = .value(elementValue)
-            } else if let labelContains {
+            } else if let labelContains = targeting.labelContains {
                 query = .labelContains(labelContains)
-            } else if let labelRegex {
+            } else if let labelRegex = targeting.labelRegex {
                 query = .labelRegex(pattern: labelRegex)
             } else {
                 throw CLIError(errorDescription: "Unexpected state: no coordinates and no element query.")
@@ -62,7 +62,7 @@ extension IOSSimTapCommand: BatchConvertible {
                 simulatorUDID: context.simulatorUDID,
                 waitTimeout: context.waitTimeout,
                 pollInterval: context.pollInterval,
-                elementType: elementType,
+                elementType: targeting.elementType,
                 frameFilter: frameFilter,
                 rootsProvider: { forceRefresh in
                     let roots = try await context.accessibilityRoots(logger: logger, forceRefresh: forceRefresh)
@@ -87,28 +87,42 @@ extension IOSSimTapCommand: BatchConvertible {
             // sleep → up so UIKit recognisers see a real hold. Pre/post
             // delays bracket the whole sequence as host sleeps.
             var primitives: [BatchPrimitive] = []
-            if let preDelay, preDelay > 0 {
+            if let preDelay = timing.preDelay, preDelay > 0 {
                 primitives.append(.hostSleep(preDelay))
             }
-            primitives.append(.hidBarrier(.touchDownAt(x: resolvedPoint.x, y: resolvedPoint.y)))
+            primitives.append(.hidBarrier(.touch(direction: .down, x: resolvedPoint.x, y: resolvedPoint.y)))
             primitives.append(.hostSleep(duration))
-            primitives.append(.hidBarrier(.touchUpAt(x: resolvedPoint.x, y: resolvedPoint.y)))
-            if let postDelay, postDelay > 0 {
+            primitives.append(.hidBarrier(.touch(direction: .up, x: resolvedPoint.x, y: resolvedPoint.y)))
+            if let postDelay = timing.postDelay, postDelay > 0 {
                 primitives.append(.hostSleep(postDelay))
             }
             return primitives
         }
 
         let tapEvent = FBSimulatorHIDEvent.tapAt(x: resolvedPoint.x, y: resolvedPoint.y)
-        return [.hidMergeable(buildDelayedEvent(preDelay: preDelay, mainEvent: tapEvent, postDelay: postDelay))]
+        return [.hidMergeable(buildDelayedEvent(preDelay: timing.preDelay, mainEvent: tapEvent, postDelay: timing.postDelay))]
     }
 }
 
 extension IOSSimSwipeCommand: BatchConvertible {
     public func toBatchPrimitives(context: BatchContext, logger: SimUseLogger) async throws -> [BatchPrimitive] {
-        let coords = try resolvedCoordinates()
+        let userCoords = try resolvedCoordinates()
         let swipeDuration = duration ?? 1.0
         let swipeDelta = delta ?? 50.0
+
+        let coords: (startX: Double, startY: Double, endX: Double, endY: Double)
+        if coordinateSpace == .ui {
+            let calibration = await context.uiSpaceCalibration(
+                fallbackMessage: "Screen orientation could not be determined; --coordinate-space ui coordinates were dispatched as device-native portrait and may be wrong if the device is rotated.",
+                logger: logger
+            )
+            let start = calibration.hidPoint(x: userCoords.startX, y: userCoords.startY)
+            let end = calibration.hidPoint(x: userCoords.endX, y: userCoords.endY)
+            coords = (start.x, start.y, end.x, end.y)
+        } else {
+            coords = (userCoords.startX, userCoords.startY, userCoords.endX, userCoords.endY)
+        }
+
         let swipeEvent = FBSimulatorHIDEvent.swipe(
             coords.startX,
             yStart: coords.startY,
@@ -123,11 +137,31 @@ extension IOSSimSwipeCommand: BatchConvertible {
 
 extension IOSSimGestureCommand: BatchConvertible {
     public func toBatchPrimitives(context: BatchContext, logger: SimUseLogger) async throws -> [BatchPrimitive] {
-        let width = screenWidth ?? 390.0
-        let height = screenHeight ?? 844.0
-        let coords = preset.coordinates(screenWidth: width, screenHeight: height)
         let gestureDuration = duration ?? preset.defaultDuration
         let gestureDelta = delta ?? preset.defaultDelta
+
+        let coords: (startX: Double, startY: Double, endX: Double, endY: Double)
+        if preset.isMultiTouch {
+            // Multi-touch presets keep the legacy raw dispatch (see the
+            // standalone path for the scope rationale).
+            let width = screenWidth ?? GestureOrientationMapping.legacyWidth
+            let height = screenHeight ?? GestureOrientationMapping.legacyHeight
+            coords = preset.coordinates(screenWidth: width, screenHeight: height)
+        } else {
+            // Directional presets ride the batch-wide calibration
+            // (issue #66) — computed lazily once per run and shared
+            // with tap selector steps. An unreachable AX tree degrades
+            // to an identity dispatch with a recorded advisory instead
+            // of failing the whole batch.
+            let calibration = await context.uiSpaceCalibration(
+                fallbackMessage: "Screen orientation could not be determined; '\(preset.rawValue)' was dispatched in device-native portrait axes and may point the wrong way if the device is rotated.",
+                logger: logger
+            )
+            let visual = GestureOrientationMapping.visualSize(
+                explicitWidth: screenWidth, explicitHeight: screenHeight, calibration: calibration)
+            let stroke = preset.strokes(screenWidth: visual.width, screenHeight: visual.height)[0]
+            coords = GestureOrientationMapping.hidStroke(stroke, calibration: calibration)
+        }
 
         let gestureEvent = FBSimulatorHIDEvent.swipe(
             coords.startX,
@@ -144,8 +178,20 @@ extension IOSSimGestureCommand: BatchConvertible {
 
 extension IOSSimTouchCommand: BatchConvertible {
     public func toBatchPrimitives(context: BatchContext, logger: SimUseLogger) async throws -> [BatchPrimitive] {
-        let touchDownEvent = FBSimulatorHIDEvent.touchDownAt(x: pointX, y: pointY)
-        let touchUpEvent = FBSimulatorHIDEvent.touchUpAt(x: pointX, y: pointY)
+        // ui space is atomic-form-only (rejected in validate for split
+        // steps), so one batch-wide calibration covers both halves.
+        let point: (x: Double, y: Double)
+        if coordinateSpace == .ui {
+            let calibration = await context.uiSpaceCalibration(
+                fallbackMessage: "Screen orientation could not be determined; --coordinate-space ui coordinates were dispatched as device-native portrait and may be wrong if the device is rotated.",
+                logger: logger
+            )
+            point = calibration.hidPoint(x: pointX, y: pointY)
+        } else {
+            point = (pointX, pointY)
+        }
+        let touchDownEvent = FBSimulatorHIDEvent.touch(direction: .down, x: point.x, y: point.y)
+        let touchUpEvent = FBSimulatorHIDEvent.touch(direction: .up, x: point.x, y: point.y)
 
         if touchDown && touchUp {
             let holdDelay = delay ?? 0.1
@@ -176,10 +222,10 @@ extension IOSSimButtonCommand: BatchConvertible {
             )
         }
         if let duration {
-            let composite = FBSimulatorHIDEvent(events: [
-                .buttonDown(hidButton),
+            let composite = FBSimulatorHIDEvent.composite([
+                .button(direction: .down, button: hidButton),
                 .delay(duration),
-                .buttonUp(hidButton)
+                .button(direction: .up, button: hidButton)
             ])
             return [.hidMergeable(composite)]
         }
@@ -191,10 +237,10 @@ extension IOSSimButtonCommand: BatchConvertible {
 extension IOSSimKeyCommand: BatchConvertible {
     public func toBatchPrimitives(context: BatchContext, logger: SimUseLogger) async throws -> [BatchPrimitive] {
         if let duration {
-            let composite = FBSimulatorHIDEvent(events: [
-                .keyDown(UInt32(keycode)),
+            let composite = FBSimulatorHIDEvent.composite([
+                .keyboard(direction: .down, keyCode: UInt32(keycode)),
                 .delay(duration),
-                .keyUp(UInt32(keycode))
+                .keyboard(direction: .up, keyCode: UInt32(keycode))
             ])
             return [.hidMergeable(composite)]
         }
@@ -216,7 +262,7 @@ extension IOSSimKeySequenceCommand: BatchConvertible {
             }
         }
 
-        return [.hidMergeable(FBSimulatorHIDEvent(events: events))]
+        return [.hidMergeable(FBSimulatorHIDEvent.composite(events))]
     }
 }
 
@@ -226,14 +272,14 @@ extension IOSSimKeyComboCommand: BatchConvertible {
 
         var events: [FBSimulatorHIDEvent] = []
         for modifier in parsedModifiers {
-            events.append(.keyDown(UInt32(modifier)))
+            events.append(.keyboard(direction: .down, keyCode: UInt32(modifier)))
         }
         events.append(.shortKeyPress(UInt32(key)))
         for modifier in parsedModifiers.reversed() {
-            events.append(.keyUp(UInt32(modifier)))
+            events.append(.keyboard(direction: .up, keyCode: UInt32(modifier)))
         }
 
-        return [.hidMergeable(FBSimulatorHIDEvent(events: events))]
+        return [.hidMergeable(FBSimulatorHIDEvent.composite(events))]
     }
 }
 
@@ -294,10 +340,10 @@ extension IOSSimPasteCommand: BatchConvertible {
     }
 
     private func modifierCombo(key: UInt32, modifier: UInt32) -> FBSimulatorHIDEvent {
-        FBSimulatorHIDEvent(events: [
-            FBSimulatorHIDEvent.keyDown(modifier),
+        FBSimulatorHIDEvent.composite([
+            FBSimulatorHIDEvent.keyboard(direction: .down, keyCode: modifier),
             FBSimulatorHIDEvent.shortKeyPress(key),
-            FBSimulatorHIDEvent.keyUp(modifier),
+            FBSimulatorHIDEvent.keyboard(direction: .up, keyCode: modifier),
         ])
     }
 }
@@ -331,7 +377,7 @@ extension IOSSimTypeCommand: BatchConvertible {
 
         switch context.typeSubmissionMode {
         case .composite:
-            return [.hidMergeable(FBSimulatorHIDEvent(events: hidEvents))]
+            return [.hidMergeable(FBSimulatorHIDEvent.composite(hidEvents))]
         case .chunked:
             let chunkSize = max(1, context.typeChunkSize)
             var primitives: [BatchPrimitive] = []
@@ -339,7 +385,7 @@ extension IOSSimTypeCommand: BatchConvertible {
             while start < hidEvents.count {
                 let end = min(start + chunkSize, hidEvents.count)
                 let chunkEvents = Array(hidEvents[start..<end])
-                primitives.append(.hidBarrier(FBSimulatorHIDEvent(events: chunkEvents)))
+                primitives.append(.hidBarrier(FBSimulatorHIDEvent.composite(chunkEvents)))
                 start = end
             }
             return primitives

@@ -124,4 +124,19 @@ public final class BatchContext {
         }
         return calibration
     }
+
+    /// Batch-wide calibration for steps whose coordinates run in ui
+    /// space (directional gesture presets, `--coordinate-space ui`).
+    /// An unreachable AX tree degrades to an identity dispatch with a
+    /// recorded advisory instead of failing the whole batch.
+    public func uiSpaceCalibration(fallbackMessage: String, logger: SimUseLogger) async -> OrientationCalibration {
+        if let roots = try? await accessibilityRoots(logger: logger) {
+            return await orientationCalibration(roots: roots, logger: logger)
+        }
+        recordAdvisory(CommandAdvisory(
+            kind: .orientationCalibrationFallback,
+            message: fallbackMessage
+        ))
+        return .identity()
+    }
 }

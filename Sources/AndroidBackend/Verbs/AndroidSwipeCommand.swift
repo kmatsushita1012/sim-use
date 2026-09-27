@@ -23,6 +23,9 @@ public struct AndroidSwipeCommand: SimUseExecutableCommand {
 
     @OptionGroup public var coordinates: SwipeCoordinateOptions
 
+    @Option(name: .customLong("coordinate-space"), help: "Accepted for parity with the iOS surface and ignored: Android coordinates are always display space, which already rotates with the UI.")
+    public var coordinateSpace: CoordinateSpace = .native
+
     @Option(name: .customLong("duration"), help: "Duration of the swipe in seconds (default 0.3).")
     public var duration: Double = 0.3
 

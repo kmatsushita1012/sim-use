@@ -4,6 +4,7 @@ import Darwin
 import Foundation
 import ObjectiveC
 import FBSimulatorControl
+import FBControlCore
 
 /// Direct host-to-Simulator pasteboard bridge.
 ///
@@ -48,7 +49,7 @@ public enum IOSSimulatorPasteboard {
     /// Resolves a Simulator through FBSimulatorControl and writes its
     /// pasteboard. This is the application-facing convenience entry point.
     public static func write(text: String, udid: String) async throws {
-        let logger = SimUseLogger(silent: true)
+        let logger = SimUseLogger()
         try await performGlobalSetup(logger: logger)
         let simulatorSet = try await getSimulatorSet(
             deviceSetPath: nil,

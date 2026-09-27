@@ -1,36 +1,44 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
+import CompanionUtilities
 import FBControlCore
 import FBSimulatorControl
 import SimUseCore
 
 // MARK: - HID Interactor
+@MainActor
 public struct HIDInteractor {
 
+    /// A HID session against one simulator boot. Commands that hold a
+    /// Session across many events (type, batch, gesture) do not re-check
+    /// boot identity per event: a mid-burst reboot fails the burst —
+    /// loudly, via the send deadline — and the next command recovers
+    /// through the boot gate in `getOrCreateHIDConnection`.
     public struct Session: @unchecked Sendable {
         public let simulatorUDID: String
         public let simulator: FBSimulator
         public let hid: FBSimulatorHID
+        /// DTUHID only delivers a digitizer primitive at a composite boundary.
+        public let usesDeviceHubTransport: Bool
     }
 
     // Cache for HID connections per simulator. Each entry carries the
     // boot token it was created against (see HIDBootIdentity): the
     // connection's mach port dies with that boot, and a send through a
-    // dead port hangs on current SimulatorKit, so reuse must be gated
-    // on the token before anything is sent.
+    // dead port hangs or silently drops input (issue #55), so reuse
+    // must be gated on the token before anything is sent.
+    // `transportTrusted` is false when the transport was auto-selected
+    // inside the boot-attach trust window (issue #67): the entry may
+    // serve the command that created it but must not be reused, so the
+    // next command re-derives the selection.
     private struct CachedConnection {
         let hid: FBSimulatorHID
-        let bootToken: Date?
+        let bootToken: HIDBootToken
+        let transportTrusted: Bool
+        let usesDeviceHubTransport: Bool
     }
 
     private static var hidConnections: [String: CachedConnection] = [:]
-    private static let hidConnectionsLock = NSLock()
-
-    private static func withConnectionLock<T>(_ body: () -> T) -> T {
-        hidConnectionsLock.lock()
-        defer { hidConnectionsLock.unlock() }
-        return body()
-    }
 
     /// Configurable stabilization delay to ensure HID events are fully processed
     /// Can be set via SIM_USE_HID_STABILIZATION_MS environment variable
@@ -39,7 +47,39 @@ public struct HIDInteractor {
            let milliseconds = UInt64(envValue) {
             return min(milliseconds, 1000)
         }
-        return 25
+        // In-process clients do not keep the command daemon alive after a
+        // request completes. On current Simulator runtimes a 25 ms drain
+        // can let a final digitizer message disappear with that process;
+        // 100 ms is sufficient for the message to reach the app without
+        // turning an ordinary tap into a long press.
+        return 100
+    }
+
+    /// Debug override for the HID transport, via SIM_USE_HID_TRANSPORT
+    /// (`indigo` | `dtuhid`). Unset (the default) lets upstream's
+    /// auto-selection pick: the DTUHID transport on simulators whose
+    /// legacy HID is dtuhidd-suppressed (booted with Device Hub open),
+    /// the legacy Indigo path otherwise. Note the daemon keeps the
+    /// environment it was spawned with — combine with SIM_USE_NO_DAEMON=1
+    /// or a daemon restart for ad-hoc experiments.
+    private static var transportOverride: FBSimulatorHIDTransportType? {
+        switch ProcessInfo.processInfo.environment["SIM_USE_HID_TRANSPORT"]?.lowercased() {
+        case "indigo": return .indigo
+        case "dtuhid": return .dtuhid
+        default: return nil
+        }
+    }
+
+    /// Deadline for a single HID send (see HIDSendDeadline). A single
+    /// perform can legitimately run ~10 s (swipe/press durations), so
+    /// the default leaves generous headroom. Override via
+    /// SIM_USE_HID_SEND_TIMEOUT_MS; 0 disables the deadline.
+    private static var sendTimeoutMs: UInt64 {
+        if let envValue = ProcessInfo.processInfo.environment["SIM_USE_HID_SEND_TIMEOUT_MS"],
+           let milliseconds = UInt64(envValue) {
+            return milliseconds
+        }
+        return 30_000
     }
 
     public static func makeSession(for simulatorUDID: String, logger: SimUseLogger) async throws -> Session {
@@ -71,43 +111,28 @@ public struct HIDInteractor {
         }
         logger.info().log("Simulator state verified: booted")
 
-        let hid = try await getOrCreateHIDConnection(for: simulator, logger: logger)
-        return Session(simulatorUDID: simulatorUDID, simulator: simulator, hid: hid)
+        let connection = try await getOrCreateHIDConnection(for: simulator, logger: logger)
+        return Session(
+            simulatorUDID: simulatorUDID,
+            simulator: simulator,
+            hid: connection.hid,
+            usesDeviceHubTransport: connection.usesDeviceHubTransport
+        )
     }
 
-    public static func performHIDEvent(_ event: FBSimulatorHIDEvent, in session: Session, logger: SimUseLogger) async throws {
-        do {
-            try await performHIDEventOnce(event, in: session, logger: logger)
-        } catch {
-            try await HIDPerformRecovery.recover(from: error, invalidate: {
-                logger.error().log("HID event failed (\(error.localizedDescription)); dropping cached HID connection for \(session.simulatorUDID)")
-                clearHIDConnection(for: session.simulatorUDID)
-            }, rebuildAndRetry: {
-                logger.info().log("Dead HID transport for \(session.simulatorUDID); rebuilding session and retrying once...")
-                let freshSession = try await makeSession(for: session.simulatorUDID, logger: logger)
-                do {
-                    try await performHIDEventOnce(event, in: freshSession, logger: logger)
-                } catch {
-                    clearHIDConnection(for: session.simulatorUDID)
-                    throw error
-                }
-            })
-        }
-    }
-
-    /// Performs one event and returns the session that is valid after the
-    /// operation. This is the application-API counterpart of
-    /// `performHIDEvent(in:)`: when the dead-transport recovery path rebuilds
-    /// a connection, callers that retain a session handle must receive that
-    /// fresh session before sending the next event in a continuous gesture.
-    public static func performHIDEventReturningSession(
+    public static func performHIDEvent(
         _ event: FBSimulatorHIDEvent,
         in session: Session,
-        logger: SimUseLogger
-    ) async throws -> Session {
+        logger: SimUseLogger,
+        stabilizationDelayMilliseconds: UInt64? = nil
+    ) async throws {
         do {
-            try await performHIDEventOnce(event, in: session, logger: logger)
-            return session
+            try await performHIDEventOnce(
+                event,
+                in: session,
+                logger: logger,
+                stabilizationDelayMilliseconds: stabilizationDelayMilliseconds
+            )
         } catch {
             // Fail-invalidate + cautious retry-once: see HIDPerformRecovery
             // for the decision rules and why only dead-transport errors
@@ -119,7 +144,12 @@ public struct HIDInteractor {
                 logger.info().log("Dead HID transport for \(session.simulatorUDID); rebuilding session and retrying once...")
                 let freshSession = try await makeSession(for: session.simulatorUDID, logger: logger)
                 do {
-                    try await performHIDEventOnce(event, in: freshSession, logger: logger)
+                    try await performHIDEventOnce(
+                        event,
+                        in: freshSession,
+                        logger: logger,
+                        stabilizationDelayMilliseconds: stabilizationDelayMilliseconds
+                    )
                 } catch {
                     // Keep the "a failed perform never leaves its
                     // connection cached" invariant on the retry path too.
@@ -127,22 +157,42 @@ public struct HIDInteractor {
                     throw error
                 }
             })
-            // A successful recovery stores the rebuilt connection in the
-            // shared HID cache. Read it back so callers retain the fresh
-            // boot-scoped session for the next event.
-            return try await makeSession(for: session.simulatorUDID, logger: logger)
         }
     }
 
-    private static func performHIDEventOnce(_ event: FBSimulatorHIDEvent, in session: Session, logger: SimUseLogger) async throws {
+    private static func performHIDEventOnce(
+        _ event: FBSimulatorHIDEvent,
+        in session: Session,
+        logger: SimUseLogger,
+        stabilizationDelayMilliseconds: UInt64?
+    ) async throws {
         logger.info().log("Performing HID event...")
-        let eventFuture = event.perform(on: session.hid)
-        _ = try await FutureBridge.value(eventFuture)
+        let timeoutMs = sendTimeoutMs
+        // Capture the hid handle, not the whole Session: FBSimulatorHID is
+        // @unchecked Sendable upstream, while Session carries the
+        // non-Sendable FBSimulator and would trip strict-concurrency
+        // checking inside the @Sendable deadline closure.
+        let hid = session.hid
+        if timeoutMs > 0 {
+            let udid = session.simulatorUDID
+            try await HIDSendDeadline.run(milliseconds: timeoutMs) {
+                try await hid.send(event: event, logger: logger)
+            } onTimeout: {
+                CLIError(errorDescription: """
+                HID event delivery timed out after \(timeoutMs) ms; the connection to \
+                simulator \(udid) may be dead (rebooted mid-command?). The cached \
+                connection is dropped and rebuilt on the next command.
+                """)
+            }
+        } else {
+            try await session.hid.send(event: event, logger: logger)
+        }
         logger.info().log("HID event performed successfully.")
 
-        if stabilizationDelayMs > 0 {
-            logger.info().log("Applying stabilization delay of \(stabilizationDelayMs)ms...")
-            try await Task.sleep(nanoseconds: stabilizationDelayMs * 1_000_000)
+        let delayMilliseconds = stabilizationDelayMilliseconds ?? stabilizationDelayMs
+        if delayMilliseconds > 0 {
+            logger.info().log("Applying stabilization delay of \(delayMilliseconds)ms...")
+            try await Task.sleep(nanoseconds: delayMilliseconds * 1_000_000)
         }
     }
 
@@ -152,34 +202,94 @@ public struct HIDInteractor {
     }
 
     // Get or create a cached HID connection (matching CompanionLib's connectToHID behavior)
-    private static func getOrCreateHIDConnection(for simulator: FBSimulator, logger: SimUseLogger) async throws -> FBSimulatorHID {
-        let currentToken = HIDBootIdentity.token(dataDirectory: simulator.dataDirectory)
-        if let cached = withConnectionLock({ hidConnections[simulator.udid] }) {
-            if HIDBootIdentity.isReusable(cachedToken: cached.bootToken, currentToken: currentToken) {
+    private static func getOrCreateHIDConnection(for simulator: FBSimulator, logger: SimUseLogger) async throws -> CachedConnection {
+        let currentToken = HIDBootIdentity.token(dataDirectory: simulator.dataDirectory, udid: simulator.udid)
+        if let cached = hidConnections[simulator.udid] {
+            let sameBoot = HIDBootIdentity.isReusable(cachedToken: cached.bootToken, currentToken: currentToken)
+            if sameBoot && cached.transportTrusted {
                 logger.info().log("Using existing HID connection for simulator \(simulator.udid)")
-                return cached.hid
+                return cached
             }
-            // The simulator was re-booted (or the boot marker is
-            // unreadable) since the connection was made: the cached
-            // handle's mach port is dead and must not be sent through.
-            logger.info().log("Boot token changed for simulator \(simulator.udid); discarding cached HID connection")
-            _ = withConnectionLock { hidConnections.removeValue(forKey: simulator.udid) }
+            if sameBoot {
+                // Same boot, but the transport was auto-selected inside
+                // the boot-attach trust window (issue #67): dtuhidd may
+                // have appeared since the probe, so the selection must
+                // be re-derived rather than pinned for the whole boot.
+                logger.info().log("Cached HID connection for \(simulator.udid) was created inside the transport trust window; discarding it to re-derive the transport selection")
+            } else {
+                // The simulator was re-booted (or the boot identity is
+                // unknowable) since the connection was made: the cached
+                // handle's mach port is dead and must not be sent through.
+                logger.info().log("Boot identity changed for simulator \(simulator.udid) (cached: \(cached.bootToken); current: \(currentToken)); discarding cached HID connection")
+            }
+            cached.hid.disconnect()
+            hidConnections.removeValue(forKey: simulator.udid)
         }
 
         logger.info().log("Creating new HID connection for simulator \(simulator.udid)...")
-        let hidFuture = simulator.connectToHID()
-        let hid = try await FutureBridge.value(hidFuture)
-
-        withConnectionLock {
-            hidConnections[simulator.udid] = CachedConnection(hid: hid, bootToken: currentToken)
+        // Upstream does not expose which transport its auto-selection
+        // resolved to, so log the input signals instead: the forced
+        // override when present, otherwise the dtuhidd-presence fact the
+        // selection keys on (a ~1–2 ms sysctl probe we already pay for
+        // the boot-identity token).
+        let usesDeviceHubTransport: Bool
+        if let transportOverride {
+            logger.info().log("HID transport forced via SIM_USE_HID_TRANSPORT: \(transportOverride)")
+            usesDeviceHubTransport = transportOverride == .dtuhid
+        } else {
+            let deviceHubDaemonPresent = dtuhiddPresenceHint(forUDID: simulator.udid)
+            let presence = deviceHubDaemonPresent.map { $0 ? "present" : "absent" } ?? "unknown"
+            logger.info().log("HID transport: auto (dtuhidd in this simulator's process tree: \(presence); upstream selects DTUHID when present)")
+            usesDeviceHubTransport = deviceHubDaemonPresent == true
         }
-        logger.info().log("HID connection created and cached for simulator \(simulator.udid)")
+        // Bare construction, not `simulator.connectToHID()`: upstream's
+        // lifecycle wrapper keeps its own per-simulator cache with no
+        // boot-identity gate, which would resurrect exactly the stale
+        // handles this cache invalidates (issue #55). Transport selection
+        // stays automatic (`FBSimulator.defaultHIDTransport`) unless the
+        // debug override is set.
+        let hid = try FBSimulatorHID(for: simulator, transport: transportOverride)
 
-        return hid
+        // A forced transport cannot race dtuhidd's boot-time attach;
+        // only the auto-selection is window-gated.
+        let transportTrusted = transportOverride != nil
+            || HIDBootIdentity.isTransportSelectionTrustworthy(token: currentToken, now: Date())
+        let connection = CachedConnection(
+            hid: hid,
+            bootToken: currentToken,
+            transportTrusted: transportTrusted,
+            usesDeviceHubTransport: usesDeviceHubTransport
+        )
+        hidConnections[simulator.udid] = connection
+        if transportTrusted {
+            logger.info().log("HID connection created and cached for simulator \(simulator.udid)")
+        } else {
+            logger.info().log("HID connection created for simulator \(simulator.udid) inside the transport trust window (launchd_sim uptime < \(Int(HIDBootIdentity.transportTrustWindow)) s); the next command re-derives the transport selection")
+        }
+
+        return connection
+    }
+
+    /// Whether a `dtuhidd` currently lives in the simulator's
+    /// `launchd_sim` subtree — the signal upstream's transport
+    /// auto-selection keys on. Diagnostic only (logged above); nil when
+    /// the process table cannot be read.
+    private static func dtuhiddPresenceHint(forUDID udid: String) -> Bool? {
+        guard let table = LaunchdSimLocator.processTable(),
+              let launchdSim = LaunchdSimLocator.record(
+                  forUDID: udid, in: table,
+                  argumentsForPID: LaunchdSimLocator.argumentBlob(forPID:))
+        else {
+            return nil
+        }
+        return table.contains { $0.ppid == launchdSim.pid && $0.command == "dtuhidd" }
     }
 
     public static func clearHIDConnections() {
-        withConnectionLock { hidConnections.removeAll() }
+        for cached in hidConnections.values {
+            cached.hid.disconnect()
+        }
+        hidConnections.removeAll()
     }
 
     /// Drop the cached HID connection for a single UDID. Used by
@@ -189,6 +299,7 @@ public struct HIDInteractor {
     /// even if the same UDID is re-booted before the daemon process
     /// itself terminates.
     public static func clearHIDConnection(for simulatorUDID: String) {
-        _ = withConnectionLock { hidConnections.removeValue(forKey: simulatorUDID) }
+        hidConnections[simulatorUDID]?.hid.disconnect()
+        hidConnections.removeValue(forKey: simulatorUDID)
     }
-}
+} 

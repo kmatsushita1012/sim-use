@@ -4,6 +4,7 @@ import Foundation
 import SimUseCore
 import AndroidBackend
 import iOSSimBackend
+import iOSDeviceBackend
 
 /// Top-level cross-platform `screenshot` verb. Owns the flag surface
 /// and resolves the target platform, then delegates to the per-backend
@@ -33,7 +34,7 @@ struct Screenshot: SimUseExecutableCommand {
     var jsonOutput: Bool { json.enabled }
 
     mutating func resolveDeferredArguments() throws {
-        try device.resolve()
+        try device.resolve(allowPhysical: true)
     }
 
     var simulatorUDIDForDaemon: String? { device.resolved }
@@ -51,17 +52,34 @@ struct Screenshot: SimUseExecutableCommand {
         switch PlatformRouter.resolve(udid: device.resolved) {
         case .android:
             return try executeAndroid()
+        case .iOSDevice:
+            // CoreDevice capture (shared with `sim-use ios-device
+            // screenshot`): any screen, no dev-signing requirement.
+            // The device-flavoured default filename ("Device Screenshot
+            // - …") is kept — it states the capture source, like the
+            // Android default embedding the serial.
+            let result = try await IOSDeviceCommand.Screenshot.performScreenshot(udid: device.resolved, output: output)
+            return ExecutionResult(path: result.path)
         case .iOSSim, .none:
             return try await executeIOSSim()
         }
     }
 
     private func executeIOSSim() async throws -> ExecutionResult {
+        let sub = makeIOSSubcommand()
+        return try await sub.execute()
+    }
+
+    /// Construct the backend command and copy every parsed flag across.
+    /// A missed field stays in ArgumentParser's wrapper-definition state
+    /// and traps on first read (#42) — pinned by
+    /// `ForwarderInitializationGuardTests`.
+    func makeIOSSubcommand() -> IOSSimScreenshotCommand {
         var sub = IOSSimScreenshotCommand()
         sub.output = output
         sub.device = device
         sub.json = json
-        return try await sub.execute()
+        return sub
     }
 
     private func executeAndroid() throws -> ExecutionResult {
@@ -75,7 +93,10 @@ struct Screenshot: SimUseExecutableCommand {
 
     private func resolveAndroidOutputPath(serial: String) -> String {
         let stamp = IOSSimScreenshotCommand.formatTimestamp(Date())
-        let defaultName = "Android Screenshot - \(serial) - \(stamp).png"
+        // The adb-serial charset the Android router accepts already excludes
+        // path separators; the sanitiser is defence in depth should those
+        // routing rules ever loosen.
+        let defaultName = "Android Screenshot - \(OutputFilePath.safeFilenameComponent(serial)) - \(stamp).png"
         guard let provided = output?.trimmingCharacters(in: .whitespacesAndNewlines), !provided.isEmpty else {
             return FileManager.default.currentDirectoryPath + "/" + defaultName
         }

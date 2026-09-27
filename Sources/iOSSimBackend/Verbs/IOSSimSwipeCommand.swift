@@ -13,11 +13,19 @@ public struct IOSSimSwipeCommand: SimUseExecutableCommand {
     /// Carries the resolved coordinates so `format(_:)` renders from
     /// the execution result instead of re-resolving the raw flags —
     /// same shape as `IOSSimTapCommand.ExecutionResult`.
-    public struct ExecutionResult: Codable, Sendable {
+    public struct ExecutionResult: Codable, CommandAdvisoryProviding {
         public let coordinates: SwipeCoordinates
+        /// Excluded from the encoded `data` payload via `CodingKeys`
+        /// — the envelope hoists it to the top-level `advisory` key.
+        public var commandAdvisory: CommandAdvisory? = nil
 
-        public init(coordinates: SwipeCoordinates) {
+        public init(coordinates: SwipeCoordinates, commandAdvisory: CommandAdvisory? = nil) {
             self.coordinates = coordinates
+            self.commandAdvisory = commandAdvisory
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case coordinates
         }
     }
 
@@ -27,6 +35,9 @@ public struct IOSSimSwipeCommand: SimUseExecutableCommand {
     )
 
     @OptionGroup public var coordinates: SwipeCoordinateOptions
+
+    @Option(name: .customLong("coordinate-space"), help: "Space the coordinates are given in: 'native' (device-native portrait, the default and historical contract) or 'ui' (visual space as printed by describe-ui; orientation-calibrated per command so outline coordinates stay correct on a rotated device).")
+    public var coordinateSpace: CoordinateSpace = .native
 
     @Option(name: .customLong("duration"), help: "Duration of the swipe in seconds.")
     public var duration: Double?
@@ -127,6 +138,26 @@ public struct IOSSimSwipeCommand: SimUseExecutableCommand {
         logger.info().log("Performing swipe from (\(coords.startX), \(coords.startY)) to (\(coords.endX), \(coords.endY))")
         logger.info().log("Duration: \(swipeDuration)s, Delta: \(swipeDelta)px")
 
+        // Native (the default) dispatches the user's coordinates
+        // untouched — the historical contract. ui opts them into the
+        // visual space describe-ui prints (issue #66 PR B).
+        var advisory: CommandAdvisory? = nil
+        let dispatch: (startX: Double, startY: Double, endX: Double, endY: Double)
+        if coordinateSpace == .ui {
+            let calibration = await UISpaceCalibrationLoader.load(
+                udid: device.resolved,
+                fallbackMessage: "Screen orientation could not be determined; --coordinate-space ui coordinates were dispatched as device-native portrait and may be wrong if the device is rotated.",
+                logger: logger
+            )
+            advisory = calibration.advisory
+            let start = calibration.hidPoint(x: coords.startX, y: coords.startY)
+            let end = calibration.hidPoint(x: coords.endX, y: coords.endY)
+            dispatch = (start.x, start.y, end.x, end.y)
+            logger.info().log("Coordinates (HID space): (\(dispatch.startX), \(dispatch.startY)) to (\(dispatch.endX), \(dispatch.endY))")
+        } else {
+            dispatch = (coords.startX, coords.startY, coords.endX, coords.endY)
+        }
+
         var events: [FBSimulatorHIDEvent] = []
 
         if let preDelay, preDelay > 0 {
@@ -135,10 +166,10 @@ public struct IOSSimSwipeCommand: SimUseExecutableCommand {
         }
 
         let swipeEvent = FBSimulatorHIDEvent.swipe(
-            coords.startX,
-            yStart: coords.startY,
-            xEnd: coords.endX,
-            yEnd: coords.endY,
+            dispatch.startX,
+            yStart: dispatch.startY,
+            xEnd: dispatch.endX,
+            yEnd: dispatch.endY,
             delta: swipeDelta,
             duration: swipeDuration
         )
@@ -149,7 +180,7 @@ public struct IOSSimSwipeCommand: SimUseExecutableCommand {
             events.append(FBSimulatorHIDEvent.delay(postDelay))
         }
 
-        let finalEvent = events.count == 1 ? events[0] : FBSimulatorHIDEvent(events: events)
+        let finalEvent = events.count == 1 ? events[0] : FBSimulatorHIDEvent.composite(events)
 
         try await HIDInteractor.performHIDEvent(
             finalEvent,
@@ -158,6 +189,6 @@ public struct IOSSimSwipeCommand: SimUseExecutableCommand {
         )
 
         logger.info().log("Swipe gesture completed successfully")
-        return ExecutionResult(coordinates: coords)
+        return ExecutionResult(coordinates: coords, commandAdvisory: advisory)
     }
 }

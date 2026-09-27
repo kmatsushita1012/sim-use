@@ -32,6 +32,7 @@ public final class AndroidDeviceController {
                 udid: device.serial,
                 name: device.model ?? device.product ?? device.serial,
                 platform: .android,
+                kind: device.isEmulator ? .emulator : .physical,
                 state: device.state,
                 runtime: "Android"
             )

@@ -96,12 +96,21 @@ actor SimulatorIOSurfaceCapture {
 
         ioClient.perform(NSSelectorFromString("updateIOPorts"))
         let candidates = try findFramebufferDescriptors(io: ioClient)
-        stopCallbacks(clearIO: false)
+        let isSameDescriptorSet = hasSameDescriptorSet(as: candidates)
+        if isSameDescriptorSet == false {
+            // CoreSimulator can replace the framebuffer connection while the
+            // descriptor objects remain retained by this capture actor. Their
+            // callback UUIDs are no longer valid at that point, and asking the
+            // private API to unregister them triggers a ROCKit assertion.
+            stopCallbacks(clearIO: false, unregister: false)
+        }
         descriptors = candidates
         lastSeeds.removeAll()
 
-        for descriptor in candidates {
-            try registerFrameCallbacks(descriptor: descriptor)
+        if isSameDescriptorSet == false {
+            for descriptor in candidates {
+                try registerFrameCallbacks(descriptor: descriptor)
+            }
         }
 
         captureFrame(force: true)
@@ -272,14 +281,27 @@ actor SimulatorIOSurfaceCapture {
         return best
     }
 
-    private func stopCallbacks(clearIO: Bool) {
-        let selector = NSSelectorFromString("unregisterScreenCallbacksWithUUID:")
-        for descriptor in descriptors {
-            guard let uuid = callbackUUIDs[ObjectIdentifier(descriptor)] else {
-                continue
-            }
-            if descriptor.responds(to: selector) {
-                descriptor.perform(selector, with: uuid)
+    private func hasSameDescriptorSet(as candidates: [NSObject]) -> Bool {
+        guard descriptors.count == candidates.count,
+              callbackUUIDs.count == candidates.count else {
+            return false
+        }
+
+        let currentIDs = Set(descriptors.map { ObjectIdentifier($0) })
+        let candidateIDs = Set(candidates.map { ObjectIdentifier($0) })
+        return currentIDs == candidateIDs
+    }
+
+    private func stopCallbacks(clearIO: Bool, unregister: Bool = true) {
+        if unregister {
+            let selector = NSSelectorFromString("unregisterScreenCallbacksWithUUID:")
+            for descriptor in descriptors {
+                guard let uuid = callbackUUIDs[ObjectIdentifier(descriptor)] else {
+                    continue
+                }
+                if descriptor.responds(to: selector) {
+                    descriptor.perform(selector, with: uuid)
+                }
             }
         }
         callbackUUIDs.removeAll()

@@ -23,6 +23,43 @@ struct SimUseKitTests {
         #expect(request.events.count == 3)
     }
 
+    @Test("continuous touch primitives retain their standalone delivery boundaries")
+    func continuousTouchPrimitivesRequireStandaloneFlush() {
+        #expect(HIDEvent.touchDown(x: 10, y: 20).requiresStandaloneFlush)
+        #expect(HIDEvent.touchMove(x: 15, y: 25).requiresStandaloneFlush)
+        #expect(HIDEvent.touchUp(x: 20, y: 30).requiresStandaloneFlush)
+        #expect(!HIDEvent.tap(x: 10, y: 20).requiresStandaloneFlush)
+    }
+
+    @Test("continuous touch relies on serialization without a per-event delay")
+    func continuousTouchDoesNotAddStabilizationDelay() {
+        #expect(HIDEvent.touchDown(x: 10, y: 20).continuousTouchStabilizationDelayMilliseconds == 0)
+        #expect(HIDEvent.touchMove(x: 15, y: 25).continuousTouchStabilizationDelayMilliseconds == 0)
+        #expect(HIDEvent.touchUp(x: 20, y: 30).continuousTouchStabilizationDelayMilliseconds == 0)
+    }
+
+    @Test("independently submitted HID batches do not overlap")
+    func hidEventCoordinatorSerializesBatches() async {
+        let coordinator = HIDEventSendCoordinator()
+        let recorder = HIDEventConcurrencyRecorder()
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<3 {
+                group.addTask {
+                    let turn = await coordinator.acquire()
+                    await recorder.begin()
+                    try? await Task.sleep(for: .milliseconds(20))
+                    await recorder.end()
+                    await turn.complete()
+                }
+            }
+        }
+
+        let snapshot = await recorder.snapshot()
+        #expect(snapshot.maximumConcurrentBatches == 1)
+        #expect(snapshot.completedBatches == 3)
+    }
+
     @Test("request defaults do not depend on CLI parsing")
     func describeDefaults() {
         let request = DescribeUIRequest()
@@ -124,5 +161,25 @@ struct SimUseKitTests {
 
         let request = GestureRequest(preset: .scrollUp)
         #expect(request.preset == .scrollUp)
+    }
+}
+
+private actor HIDEventConcurrencyRecorder {
+    private var activeBatches = 0
+    private var maximumConcurrentBatches = 0
+    private var completedBatches = 0
+
+    func begin() {
+        activeBatches += 1
+        maximumConcurrentBatches = max(maximumConcurrentBatches, activeBatches)
+    }
+
+    func end() {
+        activeBatches -= 1
+        completedBatches += 1
+    }
+
+    func snapshot() -> (maximumConcurrentBatches: Int, completedBatches: Int) {
+        (maximumConcurrentBatches, completedBatches)
     }
 }

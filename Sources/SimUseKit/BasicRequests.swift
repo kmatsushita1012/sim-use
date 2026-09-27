@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
+import CompanionUtilities
 import SimUseCore
 import iOSSimBackend
 
@@ -44,23 +45,23 @@ public struct DescribeUIRequest: SimUseRequest {
     }
 
     public func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> UIResult {
-        var command = IOSSimDescribeUICommand()
-        command.point = point
-        command.maxProbes = maxProbes
-        command.minCellSize = minCellSize
-        command.seedCellWidth = seedCellWidth
-        command.seedCellHeight = seedCellHeight
-        command.device.device = deviceID.rawValue
-        try command.resolveDeferredArguments()
-        try command.validate()
-        let result = try await command.execute()
+        let result = try await IOSSimDescribeUICommand.performDescribeUI(
+            deviceID: deviceID.rawValue,
+            point: point,
+            maxProbes: maxProbes,
+            minCellSize: minCellSize,
+            seedCellWidth: seedCellWidth,
+            seedCellHeight: seedCellHeight,
+            includeRaw: false
+        )
+        let screen = try await resolvedScreen(from: result.screen, on: deviceID, orientation: result.orientation)
         return UIResult(
             platform: result.platform,
             raw: result.raw,
             outline: result.outline,
             entries: result.entries,
             lists: result.lists,
-            screen: result.screen,
+            screen: screen,
             appLabel: result.appLabel,
             appPackage: result.appPackage,
             crashDialog: result.crashDialog,
@@ -68,6 +69,41 @@ public struct DescribeUIRequest: SimUseRequest {
             advisory: result.commandAdvisory
         )
     }
+}
+
+@MainActor
+private func resolvedScreen(
+    from reportedScreen: Outline.Frame?,
+    on deviceID: SimulatorID,
+    orientation: String?
+) async throws -> Outline.Frame {
+    if let reportedScreen, reportedScreen.width > 0, reportedScreen.height > 0 {
+        return reportedScreen
+    }
+
+    // Some current Simulator runtimes expose only a zero-size AX
+    // application shell while the remote-content recovery fills in visible
+    // elements. The simulator's screenInfo remains authoritative for the
+    // public result's coordinate canvas.
+    let logger = SimUseLogger()
+    let simulatorSet = try await getSimulatorSet(
+        deviceSetPath: nil,
+        logger: logger,
+        reporter: EmptyEventReporter.shared
+    )
+    guard let simulator = simulatorSet.allSimulators.first(where: { $0.udid == deviceID.rawValue }),
+          let native = NativePortraitSize(screenInfo: simulator.screenInfo)
+    else {
+        throw SimUseError.transient("Simulator UI response was missing screen geometry.")
+    }
+    let displayOrientation = orientation.flatMap(DisplayOrientation.init(rawValue:)) ?? .portrait
+    let size = displayOrientation.uiSize(native: native)
+    return Outline.Frame(
+        x: 0,
+        y: 0,
+        width: Int(size.width.rounded()),
+        height: Int(size.height.rounded())
+    )
 }
 
 public struct UIResult: Codable, Equatable, Sendable {
@@ -166,28 +202,42 @@ public struct TapRequest: SimUseRequest {
     }
 
     public func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> TapResult {
-        var command = IOSSimTapCommand()
-        command.alias = alias
-        command.point = point
-        command.pointX = x
-        command.pointY = y
-        command.elementID = accessibilityIdentifier
-        command.elementLabel = label
-        command.elementValue = value
-        command.labelContains = labelContains
-        command.labelRegex = labelRegex
-        command.elementType = elementType
-        command.frameSpecs = frameSpecs
-        command.preDelay = preDelay
-        command.postDelay = postDelay
-        command.duration = duration
-        command.waitTimeout = waitTimeout
-        command.pollInterval = pollInterval
-        command.device.device = deviceID.rawValue
-        try command.resolveDeferredArguments()
-        try command.validate()
-        let result = try await command.execute()
-        return TapResult(x: result.x, y: result.y, advisory: result.commandAdvisory)
+        let targeting = TapTargetingOptions(
+            pointX: x,
+            pointY: y,
+            point: point,
+            elementID: accessibilityIdentifier,
+            elementLabel: label,
+            elementValue: value,
+            labelContains: labelContains,
+            labelRegex: labelRegex,
+            elementType: elementType,
+            frameSpecs: frameSpecs
+        )
+        let timing = TapTimingOptions(
+            preDelay: preDelay,
+            postDelay: postDelay,
+            waitTimeout: waitTimeout,
+            pollInterval: pollInterval
+        )
+        let multiTouch = MultiTouchOptions(fingers: 1, fingerDistance: 50)
+        try targeting.validate(alias: alias)
+        try timing.validate()
+        try TapTimingOptions.validateDuration(duration)
+        try multiTouch.validate()
+        let result = try await IOSSimTapCommand.performTap(
+            alias: alias,
+            targeting: targeting,
+            timing: timing,
+            duration: duration,
+            multiTouch: multiTouch,
+            device: DeviceOptions(device: deviceID.rawValue, resolved: deviceID.rawValue),
+            json: JSONOutputOptions(enabled: false)
+        )
+        guard let x = result.x, let y = result.y else {
+            throw SimUseError.transient("Simulator tap response was missing dispatch coordinates.")
+        }
+        return TapResult(x: x, y: y, advisory: result.commandAdvisory)
     }
 }
 
@@ -227,16 +277,19 @@ public struct SwipeRequest: SimUseRequest {
 
     public func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> SwipeResult {
         var command = IOSSimSwipeCommand()
-        command.coordinates.startX = coordinates.startX
-        command.coordinates.startY = coordinates.startY
-        command.coordinates.endX = coordinates.endX
-        command.coordinates.endY = coordinates.endY
+        command.coordinates = SwipeCoordinateOptions(
+            startX: coordinates.startX,
+            startY: coordinates.startY,
+            endX: coordinates.endX,
+            endY: coordinates.endY
+        )
+        command.coordinateSpace = .native
         command.duration = duration
         command.delta = delta
         command.preDelay = preDelay
         command.postDelay = postDelay
-        command.device.device = deviceID.rawValue
-        try command.resolveDeferredArguments()
+        command.device = DeviceOptions(device: deviceID.rawValue, resolved: deviceID.rawValue)
+        command.json = JSONOutputOptions(enabled: false)
         try command.validate()
         let result = try await command.execute()
         return SwipeResult(coordinates: result.coordinates)
@@ -305,26 +358,25 @@ public struct GestureRequest: SimUseRequest {
     }
 
     public func execute(on deviceID: SimulatorID, using client: SimUseClient) async throws -> GestureResult {
-        var command = IOSSimGestureCommand(
-            preset: preset,
-            screenWidth: screenWidth,
-            screenHeight: screenHeight,
-            duration: duration,
-            delta: delta,
-            scale: scale,
-            angle: angle,
-            centerX: centerX,
-            centerY: centerY,
-            radius: radius,
-            steps: steps,
-            stepMs: stepMs,
-            preDelay: preDelay,
-            postDelay: postDelay,
-            deviceID: deviceID.rawValue
-        )
-        try command.resolveDeferredArguments()
+        var command = IOSSimGestureCommand()
+        command.preset = preset
+        command.screenWidth = screenWidth
+        command.screenHeight = screenHeight
+        command.duration = duration
+        command.delta = delta
+        command.scale = scale
+        command.angle = angle
+        command.centerX = centerX
+        command.centerY = centerY
+        command.radius = radius
+        command.steps = steps
+        command.stepMs = stepMs
+        command.preDelay = preDelay
+        command.postDelay = postDelay
+        command.device = DeviceOptions(device: deviceID.rawValue, resolved: deviceID.rawValue)
+        command.json = JSONOutputOptions(enabled: false)
         try command.validate()
-        _ = try await command.execute(logger: SimUseLogger(silent: true))
+        _ = try await command.execute()
         return GestureResult()
     }
 }

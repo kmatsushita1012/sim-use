@@ -96,22 +96,6 @@ public struct IOSSimTypeCommand: SimUseExecutableCommand {
 
     public func execute() async throws -> ExecutionResult {
         let logger = SimUseLogger()
-        try await setup(logger: logger)
-        try await performGlobalSetup(logger: logger)
-
-        // Xcode 27 stop-gap: the dtuhidd daemon takes over the simulator
-        // keyboard HID service, so the legacy HID key injection that `type`
-        // uses is silently dropped. Fail loudly with the paste workaround
-        // instead of typing into the void; SIM_USE_SKIP_DTUHIDD_CHECK=1
-        // overrides. See issue #84.
-        let skipDtuhiddCheck = ProcessInfo.processInfo
-            .environment[KeyboardHIDSuppression.skipCheckEnvVar]?.isEmpty == false
-        let resolvedUDID = device.resolved
-        if !skipDtuhiddCheck, KeyboardHIDSuppression.isSuppressed(forUDID: resolvedUDID) {
-            let message = KeyboardHIDSuppression.workaroundMessage(udid: resolvedUDID)
-            logger.error().log(message)
-            throw CLIError(errorDescription: message)
-        }
 
         let inputText: String
         switch (text, useStdin, inputFile) {
@@ -165,15 +149,20 @@ public struct IOSSimTypeCommand: SimUseExecutableCommand {
             throw error
         }
 
-        // Empty input yields zero HID events. Return before building a
-        // session so `type ""` stays a strict no-op — it must not pay
-        // framework/simulator-set initialisation or fail against a
-        // device that is not booted (an agent's `type "$VAR"` with an
-        // empty variable relied on the pre-session-reuse behaviour).
+        // Empty input yields zero HID events. Return before the framework
+        // preflight below so `type ""` stays a strict no-op — it must not
+        // pay the Xcode check, private-framework load, or simulator-set
+        // initialisation, nor fail against a device that is not booted
+        // (an agent's `type "$VAR"` with an empty variable relies on
+        // this). The preflight's `xcode-select` subprocess also made this
+        // path flake on loaded CI runners for no benefit.
         guard !hidEvents.isEmpty else {
             logger.info().log("No HID events to perform (empty input); skipping session.")
             return ExecutionResult()
         }
+
+        try await setup(logger: logger)
+        try await performGlobalSetup(logger: logger)
 
         logger.info().log("Performing HID event sequence for text typing")
 

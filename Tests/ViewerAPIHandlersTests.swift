@@ -19,6 +19,7 @@ struct ViewerAPIHandlersTests {
         udid: "TEST-UDID",
         name: "iPhone Fixture",
         platform: .ios,
+        kind: .simulator,
         state: Device.State.iosBooted,
         runtime: "iOS 18.6"
     )
@@ -32,7 +33,8 @@ struct ViewerAPIHandlersTests {
             lists: [],
             screen: Outline.Frame(x: 0, y: 0, width: 100, height: 200),
             appLabel: "Fixture",
-            appPackage: "com.example.fixture"
+            appPackage: "com.example.fixture",
+            orientation: "landscape-right"
         )
     }
 
@@ -46,7 +48,7 @@ struct ViewerAPIHandlersTests {
         }
     ) -> ViewerAPIHandlers {
         ViewerAPIHandlers(
-            listSimulators: list,
+            listDevices: list,
             describeUI: describe,
             tap: tap
         )
@@ -81,6 +83,25 @@ struct ViewerAPIHandlersTests {
         let devices = try #require(body["devices"] as? [[String: Any]])
         #expect(devices.first?["deviceId"] as? String == "TEST-UDID")
         #expect(devices.first?["platform"] as? String == "ios")
+        #expect(devices.first?["kind"] as? String == "simulator")
+    }
+
+    @Test("Viewer excludes physical iOS devices")
+    func devicesExcludePhysicalIOS() async throws {
+        let physical = Device(
+            udid: "PHYSICAL-UDID",
+            name: "Physical iPhone",
+            platform: .ios,
+            kind: .physical,
+            state: Device.State.iosBooted,
+            runtime: "iOS 27"
+        )
+        let handlers = makeHandlers(list: { [device, physical] })
+        let response = await handlers.devices(request())
+        let body = try jsonBody(response)
+        let devices = try #require(body["devices"] as? [[String: Any]])
+        #expect(devices.count == 1)
+        #expect(devices.first?["deviceId"] as? String == "TEST-UDID")
     }
 
     @Test("snapshot maps UIResult without a CLI envelope")
@@ -92,6 +113,8 @@ struct ViewerAPIHandlersTests {
         let body = try jsonBody(response)
         #expect(body["ok"] as? Bool == true)
         #expect(body["outline"] as? String == "App: Fixture 100x200")
+        let screen = try #require(body["screen"] as? [String: Any])
+        #expect(screen["orientation"] as? String == "landscape-right")
     }
 
     @Test("tap maps typed TapResult directly")

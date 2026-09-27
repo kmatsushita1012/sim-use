@@ -59,6 +59,7 @@ public enum SimctlDeviceLister {
                 udid: udid,
                 name: name,
                 platform: .ios,
+                kind: .simulator,
                 state: state,
                 runtime: runtimeName ?? runtimeIdentifier.map(friendlyRuntime)
             )
@@ -123,6 +124,7 @@ public enum SimctlDeviceLister {
                     udid: raw.udid,
                     name: raw.name,
                     platform: .ios,
+                    kind: .simulator,
                     state: raw.state,
                     runtime: runtime
                 ))

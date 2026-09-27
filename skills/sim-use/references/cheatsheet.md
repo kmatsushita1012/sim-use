@@ -4,8 +4,8 @@
 
 | Namespace | Scope | Examples |
 |---|---|---|
-| `sim-use <verb>` | Cross-platform (iOS + Android) | `ui`, `tap`, `swipe`, `type`, `paste`, `button`, `gesture`, `screenshot`, `record-video`, `app-state` |
-| `sim-use ios <verb>` | iOS Simulator only | `key`, `key-combo`, `key-sequence`, `stream-video`, `batch` |
+| `sim-use <verb>` | Cross-platform (iOS + Android) | `ui`, `tap`, `swipe`, `type`, `paste`, `button`, `gesture`, `screenshot`, `record-video`, `stream-video`, `app-state` |
+| `sim-use ios <verb>` | iOS Simulator only | `key`, `key-combo`, `key-sequence`, `batch` |
 | `sim-use android <verb>` | Android device only | `init`, `devices`, `ping` |
 
 ## Device resolution
@@ -122,8 +122,11 @@ sim-use touch -x 150 -y 250 --down --up --delay 1.0  # long press
 
 ```bash
 sim-use screenshot --output shot.png
-sim-use record-video --output recording.mp4 --fps 15   # Ctrl+C to stop
-sim-use ios stream-video --fps 10 --format mjpeg        # iOS only
+sim-use record-video --output recording.mp4             # H.264, 30 fps default; Ctrl+C to stop
+sim-use record-video --output smooth.mp4 --fps 60       # iOS: constant rate up to 60 fps (Android ignores --fps, native rate)
+sim-use record-video --output demo.gif                  # animated GIF (inferred from extension, or --format gif); 10 fps + 0.5 scale defaults; add --gif-markers for START/END boundary cards; transcoded after Ctrl+C
+sim-use stream-video --fps 10 --format mjpeg > out.mjpeg  # live JPEG stream (both platforms)
+sim-use stream-video --format h264 | ffplay -f h264 -      # Android only: native H.264 passthrough (VFR)
 ```
 
 ### Stopping a backgrounded recording
@@ -215,4 +218,4 @@ Every command supports `--json`. Shape: `{ "ok": true/false, "data": {...}, "err
 
 The `hint` field on errors contains actionable guidance (e.g. candidate labels on `multipleMatches`). Use it for self-correcting retries.
 
-For `ui --json`, prefer `data.outline` / `data.entries` / `data.lists`. The `data.raw` field is the full AX tree (~3x larger); omit with `jq 'del(.data.raw)'` in agent loops.
+For `ui --json`, prefer `data.outline` / `data.entries` / `data.lists`. The `data.raw` field is the full AX tree (~3x larger); pass `--no-raw` to omit it in agent loops (on older binaries without the flag, use `jq 'del(.data.raw)'`).

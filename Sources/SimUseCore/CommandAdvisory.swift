@@ -9,6 +9,7 @@ public struct CommandAdvisory: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Equatable, Sendable {
         case fullScreenTapTarget = "full_screen_tap_target"
         case orientationCalibrationFallback = "orientation_calibration_fallback"
+        case remoteContentRecovery = "remote_content_recovery"
     }
 
     public let kind: Kind

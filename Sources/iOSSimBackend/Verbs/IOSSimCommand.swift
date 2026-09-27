@@ -19,7 +19,6 @@ import Foundation
 ///   * `sim-use ios key`           (HID keycode press)
 ///   * `sim-use ios key-combo`     (HID modifier + key)
 ///   * `sim-use ios key-sequence`  (HID sequence of keycodes)
-///   * `sim-use ios stream-video`  (live mjpeg/raw/bgra stream)
 ///   * `sim-use ios batch`         (HID-session-pinned step runner)
 public struct IOSSimCommand: ParsableCommand {
     public static let configuration = CommandConfiguration(
@@ -48,11 +47,11 @@ public struct IOSSimCommand: ParsableCommand {
             IOSSimGestureCommand.self,
             IOSSimMultiTouchCommand.self,
             IOSSimRecordVideoCommand.self,
+            IOSSimStreamVideoCommand.self,
             // iOS-only verbs — reachable only here.
             IOSSimKeyCommand.self,
             IOSSimKeyComboCommand.self,
             IOSSimKeySequenceCommand.self,
-            IOSSimStreamVideoCommand.self,
             IOSSimBatchCommand.self,
         ]
     )

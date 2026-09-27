@@ -61,6 +61,26 @@ struct ScreenshotForwarderTests {
         #expect(url.pathExtension == "png")
     }
 
+    @Test("A simulator name containing path separators stays a single filename component")
+    func slashedSimulatorNameStaysSingleComponent() throws {
+        let url = try IOSSimScreenshotCommand.prepareOutputURL(
+            output: nil,
+            simulatorName: "My iPhone/Work"
+        )
+        #expect(url.deletingLastPathComponent().path == FileManager.default.currentDirectoryPath)
+        #expect(url.lastPathComponent.hasPrefix("Simulator Screenshot - My iPhone-Work - "))
+    }
+
+    @Test("A traversal-shaped simulator name cannot escape the current directory")
+    func traversalSimulatorNameResolvesIntoCwd() throws {
+        let url = try IOSSimScreenshotCommand.prepareOutputURL(
+            output: nil,
+            simulatorName: "../../evil"
+        )
+        #expect(url.deletingLastPathComponent().path == FileManager.default.currentDirectoryPath)
+        #expect(!url.lastPathComponent.contains("/"))
+    }
+
     @Test("Tilde-prefixed --output expands the home directory")
     func tildeExpansion() throws {
         let url = try IOSSimScreenshotCommand.prepareOutputURL(

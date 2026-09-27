@@ -7,6 +7,7 @@ import Darwin
 import SimUseCore
 import AndroidBackend
 import iOSSimBackend
+import iOSDeviceBackend
 import SimUseKit
 
 // MARK: - Main Entry Point
@@ -33,7 +34,6 @@ private let iOSOnlyVerbRedirects: [String: String] = [
     "key": "sim-use ios key",
     "key-combo": "sim-use ios key-combo",
     "key-sequence": "sim-use ios key-sequence",
-    "stream-video": "sim-use ios stream-video",
     "batch": "sim-use ios batch",
 ]
 
@@ -60,8 +60,8 @@ enum EntryPoint {
                 Error: `sim-use \(typed)` is not a top-level command. \
                 Did you mean `\(canonical)`?
 
-                Hint: as of 0.5.x, the five iOS-only verbs (key, key-combo, \
-                key-sequence, stream-video, batch) live exclusively under \
+                Hint: as of 0.5.x, the iOS-only verbs (key, key-combo, \
+                key-sequence, batch) live exclusively under \
                 `sim-use ios <verb>` — the top-level surface only carries \
                 verbs that work on both iOS and Android. Re-run with the \
                 `ios` namespace and your existing flags should keep working:
@@ -105,17 +105,19 @@ struct SimUse: AsyncParsableCommand {
             Gesture.self,
             MultiTouch.self,
             RecordVideo.self,
+            StreamVideo.self,
             Screenshot.self,
             AppState.self,
             Viewer.self,
             // Daemon + spike helpers.
             Daemon.self,
             SpikeDaemon.self,
-            // Platform-specific namespaces. The five iOS-only HID verbs
-            // (key, key-combo, key-sequence, stream-video, batch) live
-            // under `IOSSimCommand` only — the top-level surface only
-            // carries verbs that work on both platforms.
+            // Platform-specific namespaces. The four iOS-only HID verbs
+            // (key, key-combo, key-sequence, batch) live under
+            // `IOSSimCommand` only — the top-level surface only carries
+            // verbs that work on both platforms.
             IOSSimCommand.self,
+            IOSDeviceCommand.self,
             AndroidCommand.self,
         ]
     )

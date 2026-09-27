@@ -83,6 +83,35 @@ struct DeviceOptionsResolveTests {
         }
     }
 
+    @Test("physical iOS device UDID is rejected with a pointer to ios-device")
+    func physicalDeviceUDIDRejected() throws {
+        var probe = try ProbeCommand.parse(["--device", "00008130-00066D2A10EB8D3A"])
+        do {
+            try probe.device.resolve()
+            Issue.record("expected PhysicalIOSDeviceError for a physical device UDID")
+        } catch let error as PhysicalIOSDeviceError {
+            #expect(error.identifier == "00008130-00066D2A10EB8D3A")
+            #expect(error.hint?.contains("ios-device") == true)
+        } catch {
+            Issue.record("wrong error: \(error)")
+        }
+    }
+
+    @Test("physical UDID via the --udid alias is rejected identically")
+    func physicalDeviceViaUDIDAliasRejected() throws {
+        var probe = try ProbeCommand.parse(["--udid", "00008130-00066D2A10EB8D3A"])
+        #expect(throws: PhysicalIOSDeviceError.self) {
+            try probe.device.resolve()
+        }
+    }
+
+    @Test("allowPhysical lets a physical UDID through for the routing verbs")
+    func physicalDeviceAllowedWhenOptedIn() throws {
+        var probe = try ProbeCommand.parse(["--device", "00008130-00066D2A10EB8D3A"])
+        try probe.device.resolve(allowPhysical: true)
+        #expect(probe.device.resolved == "00008130-00066D2A10EB8D3A")
+    }
+
     @Test("Android-shape value bypasses DeviceResolver entirely")
     func androidShapeBypasses() throws {
         // `emulator-5554` matches PlatformRouter.looksLikeAndroid; the
