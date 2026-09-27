@@ -18,6 +18,8 @@ public struct HIDInteractor {
         public let simulatorUDID: String
         public let simulator: FBSimulator
         public let hid: FBSimulatorHID
+        /// DTUHID only delivers a digitizer primitive at a composite boundary.
+        public let usesDeviceHubTransport: Bool
     }
 
     // Cache for HID connections per simulator. Each entry carries the
@@ -33,6 +35,7 @@ public struct HIDInteractor {
         let hid: FBSimulatorHID
         let bootToken: HIDBootToken
         let transportTrusted: Bool
+        let usesDeviceHubTransport: Bool
     }
 
     private static var hidConnections: [String: CachedConnection] = [:]
@@ -108,8 +111,13 @@ public struct HIDInteractor {
         }
         logger.info().log("Simulator state verified: booted")
 
-        let hid = try await getOrCreateHIDConnection(for: simulator, logger: logger)
-        return Session(simulatorUDID: simulatorUDID, simulator: simulator, hid: hid)
+        let connection = try await getOrCreateHIDConnection(for: simulator, logger: logger)
+        return Session(
+            simulatorUDID: simulatorUDID,
+            simulator: simulator,
+            hid: connection.hid,
+            usesDeviceHubTransport: connection.usesDeviceHubTransport
+        )
     }
 
     public static func performHIDEvent(
@@ -194,13 +202,13 @@ public struct HIDInteractor {
     }
 
     // Get or create a cached HID connection (matching CompanionLib's connectToHID behavior)
-    private static func getOrCreateHIDConnection(for simulator: FBSimulator, logger: SimUseLogger) async throws -> FBSimulatorHID {
+    private static func getOrCreateHIDConnection(for simulator: FBSimulator, logger: SimUseLogger) async throws -> CachedConnection {
         let currentToken = HIDBootIdentity.token(dataDirectory: simulator.dataDirectory, udid: simulator.udid)
         if let cached = hidConnections[simulator.udid] {
             let sameBoot = HIDBootIdentity.isReusable(cachedToken: cached.bootToken, currentToken: currentToken)
             if sameBoot && cached.transportTrusted {
                 logger.info().log("Using existing HID connection for simulator \(simulator.udid)")
-                return cached.hid
+                return cached
             }
             if sameBoot {
                 // Same boot, but the transport was auto-selected inside
@@ -224,12 +232,15 @@ public struct HIDInteractor {
         // override when present, otherwise the dtuhidd-presence fact the
         // selection keys on (a ~1–2 ms sysctl probe we already pay for
         // the boot-identity token).
+        let usesDeviceHubTransport: Bool
         if let transportOverride {
             logger.info().log("HID transport forced via SIM_USE_HID_TRANSPORT: \(transportOverride)")
+            usesDeviceHubTransport = transportOverride == .dtuhid
         } else {
-            let presence = dtuhiddPresenceHint(forUDID: simulator.udid)
-                .map { $0 ? "present" : "absent" } ?? "unknown"
+            let deviceHubDaemonPresent = dtuhiddPresenceHint(forUDID: simulator.udid)
+            let presence = deviceHubDaemonPresent.map { $0 ? "present" : "absent" } ?? "unknown"
             logger.info().log("HID transport: auto (dtuhidd in this simulator's process tree: \(presence); upstream selects DTUHID when present)")
+            usesDeviceHubTransport = deviceHubDaemonPresent == true
         }
         // Bare construction, not `simulator.connectToHID()`: upstream's
         // lifecycle wrapper keeps its own per-simulator cache with no
@@ -243,15 +254,20 @@ public struct HIDInteractor {
         // only the auto-selection is window-gated.
         let transportTrusted = transportOverride != nil
             || HIDBootIdentity.isTransportSelectionTrustworthy(token: currentToken, now: Date())
-        hidConnections[simulator.udid] = CachedConnection(
-            hid: hid, bootToken: currentToken, transportTrusted: transportTrusted)
+        let connection = CachedConnection(
+            hid: hid,
+            bootToken: currentToken,
+            transportTrusted: transportTrusted,
+            usesDeviceHubTransport: usesDeviceHubTransport
+        )
+        hidConnections[simulator.udid] = connection
         if transportTrusted {
             logger.info().log("HID connection created and cached for simulator \(simulator.udid)")
         } else {
             logger.info().log("HID connection created for simulator \(simulator.udid) inside the transport trust window (launchd_sim uptime < \(Int(HIDBootIdentity.transportTrustWindow)) s); the next command re-derives the transport selection")
         }
 
-        return hid
+        return connection
     }
 
     /// Whether a `dtuhidd` currently lives in the simulator's

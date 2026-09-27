@@ -311,11 +311,10 @@ private final class SimulatorWorker {
                 )
             } else if let backendEvent = event.makeBackendEvent() {
                 // Device Hub's DTUHID transport only drains a digitizer
-                // event at a composite boundary. Keep every public
-                // `sendTimed` call discrete so clients can stream a real
-                // down → move… → up sequence, while making each
-                // individual touch event observable by the simulator.
-                let transportEvent = event.requiresStandaloneFlush
+                // event at a composite boundary. Indigo handles the same
+                // primitives directly; wrapping them there creates an
+                // unnecessary transport boundary in a live touch stream.
+                let transportEvent = session.usesDeviceHubTransport && event.requiresStandaloneFlush
                     ? FBSimulatorHIDEvent.composite([backendEvent])
                     : backendEvent
                 try await HIDInteractor.performHIDEvent(
