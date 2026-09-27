@@ -474,15 +474,14 @@ public enum HIDEvent: Sendable {
         }
     }
 
-    /// Continuous preview input must keep up with pointer updates. Eight
-    /// milliseconds remains above the minimum interval required by the
-    /// underlying Indigo transport, while the final touch-up retains the
-    /// normal drain delay so it is not dropped when the stream goes idle.
+    /// Preview input is already serialized by `HIDEventSendCoordinator`.
+    /// Do not add a per-event drain delay: doing so turns a normal pointer
+    /// stream into a growing backlog. Ordering comes solely from the queue.
     var continuousTouchStabilizationDelayMilliseconds: UInt64? {
         switch self {
-        case .touchDown, .touchMove:
-            8
-        case .shake, .applePay, .sideButton, .siri, .touchUp, .tap, .swipe,
+        case .touchDown, .touchMove, .touchUp:
+            0
+        case .shake, .applePay, .sideButton, .siri, .tap, .swipe,
              .keyDown, .keyUp, .buttonDown, .buttonUp, .delay:
             nil
         }
