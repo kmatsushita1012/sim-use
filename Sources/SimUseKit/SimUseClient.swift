@@ -185,6 +185,51 @@ public final class SimulatorSession: @unchecked Sendable {
     }
 }
 
+/// Preserves the order of independently submitted HID event batches.
+///
+/// `SimulatorWorker` is main-actor isolated but yields while a private
+/// framework call is in flight. Without this gate, separately submitted
+/// touch-down, touch-move, and touch-up batches can overlap at those yield
+/// points and reach the simulator out of order.
+actor HIDEventSendCoordinator {
+    private var tail: Task<Void, Never>?
+
+    func acquire() async -> HIDEventSendTurn {
+        let predecessor = tail
+        let turn = HIDEventSendTurn()
+        tail = Task.detached {
+            _ = await predecessor?.value
+            await turn.waitForCompletion()
+        }
+        _ = await predecessor?.value
+        return turn
+    }
+}
+
+actor HIDEventSendTurn {
+    private var isCompleted = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func waitForCompletion() async {
+        guard isCompleted == false else { return }
+        await withCheckedContinuation { continuation in
+            if isCompleted {
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+            }
+        }
+    }
+
+    func complete() {
+        guard isCompleted == false else { return }
+        isCompleted = true
+        let pendingWaiters = waiters
+        waiters.removeAll()
+        pendingWaiters.forEach { $0.resume() }
+    }
+}
+
 /// Owns all mutable state associated with one simulator. A separate worker
 /// is created for every UDID, so operations for different simulators can
 /// proceed concurrently while HID events for one simulator remain ordered.
@@ -193,6 +238,7 @@ private final class SimulatorWorker {
     private let deviceID: SimulatorID
     private var session: HIDInteractor.Session?
     private let livenessTracker = ProcessLivenessTracker()
+    private let hidEventCoordinator = HIDEventSendCoordinator()
 
     init(deviceID: SimulatorID) {
         self.deviceID = deviceID
@@ -222,58 +268,67 @@ private final class SimulatorWorker {
     func sendTimed(_ events: [HIDEvent]) async throws -> [HIDEventTiming] {
         guard !events.isEmpty else { return [] }
         try validate(events)
+
+        let turn = await hidEventCoordinator.acquire()
         do {
-            if session == nil {
-                try await open()
-            }
-            guard let session else {
-                throw SimUseError.transient("Simulator HID session was not initialized.")
-            }
-            let logger = SimUseLogger()
-            let start = Date.timeIntervalSinceReferenceDate
-            var previous = start
-            var timings: [HIDEventTiming] = []
-            timings.reserveCapacity(events.count)
-            for (index, event) in events.enumerated() {
-                if case .shake = event {
-                    try SimulatorShake.perform(in: session)
-                } else if case let .tap(x, y) = event {
-                    // `tapAt` is accepted by the Device Hub transport but
-                    // can be dropped before UIKit observes it. Mirror the
-                    // CLI path and send the complete press lifecycle as one
-                    // composite event; DTUHID drains at the gesture boundary.
-                    try await HIDInteractor.performHIDEvent(
-                        FBSimulatorHIDEvent.composite([
-                            .touch(direction: .down, x: x, y: y),
-                            .touch(direction: .up, x: x, y: y),
-                        ]),
-                        in: session,
-                        logger: logger
-                    )
-                } else if let backendEvent = event.makeBackendEvent() {
-                    // Device Hub's DTUHID transport only drains a digitizer
-                    // event at a composite boundary. Keep every public
-                    // `sendTimed` call discrete so clients can stream a real
-                    // down → move… → up sequence, while making each
-                    // individual touch event observable by the simulator.
-                    let transportEvent = event.requiresStandaloneFlush
-                        ? FBSimulatorHIDEvent.composite([backendEvent])
-                        : backendEvent
-                    try await HIDInteractor.performHIDEvent(
-                        transportEvent,
-                        in: session,
-                        logger: logger
-                    )
-                }
-                let now = Date.timeIntervalSinceReferenceDate
-                timings.append(HIDEventTiming(index: index, event: event, interval: now - previous, elapsed: now - start))
-                previous = now
-            }
+            let timings = try await performSendTimed(events)
+            await turn.complete()
             return timings
         } catch {
+            await turn.complete()
             session = nil
             throw error
         }
+    }
+
+    private func performSendTimed(_ events: [HIDEvent]) async throws -> [HIDEventTiming] {
+        if session == nil {
+            try await open()
+        }
+        guard let session else {
+            throw SimUseError.transient("Simulator HID session was not initialized.")
+        }
+        let logger = SimUseLogger()
+        let start = Date.timeIntervalSinceReferenceDate
+        var previous = start
+        var timings: [HIDEventTiming] = []
+        timings.reserveCapacity(events.count)
+        for (index, event) in events.enumerated() {
+            if case .shake = event {
+                try SimulatorShake.perform(in: session)
+            } else if case let .tap(x, y) = event {
+                // `tapAt` is accepted by the Device Hub transport but
+                // can be dropped before UIKit observes it. Mirror the
+                // CLI path and send the complete press lifecycle as one
+                // composite event; DTUHID drains at the gesture boundary.
+                try await HIDInteractor.performHIDEvent(
+                    FBSimulatorHIDEvent.composite([
+                        .touch(direction: .down, x: x, y: y),
+                        .touch(direction: .up, x: x, y: y),
+                    ]),
+                    in: session,
+                    logger: logger
+                )
+            } else if let backendEvent = event.makeBackendEvent() {
+                // Device Hub's DTUHID transport only drains a digitizer
+                // event at a composite boundary. Keep every public
+                // `sendTimed` call discrete so clients can stream a real
+                // down → move… → up sequence, while making each
+                // individual touch event observable by the simulator.
+                let transportEvent = event.requiresStandaloneFlush
+                    ? FBSimulatorHIDEvent.composite([backendEvent])
+                    : backendEvent
+                try await HIDInteractor.performHIDEvent(
+                    transportEvent,
+                    in: session,
+                    logger: logger
+                )
+            }
+            let now = Date.timeIntervalSinceReferenceDate
+            timings.append(HIDEventTiming(index: index, event: event, interval: now - previous, elapsed: now - start))
+            previous = now
+        }
+        return timings
     }
 
     func invalidate() {

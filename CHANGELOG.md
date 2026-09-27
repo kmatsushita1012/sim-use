@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- SimUseKit now serializes independently submitted HID batches per simulator, preserving continuous touch down/move/up order across async call boundaries.
 - `SimUseKit` now flushes each independently submitted touch-down, touch-move,
   and touch-up event through Device Hub's DTUHID transport without coalescing
   the application's continuous touch stream.
